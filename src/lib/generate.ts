@@ -180,19 +180,20 @@ export function generate(f: Facts): World {
       () => pkgs.length ? choice(`Which package does ${name} use?`, pkgs[h % pkgs.length], allPackages.filter(x => !pkgs.includes(x)), h >>> 5, 'Built from its imports') : null,
       () => deps ? numeric(`How many files in this repo import ${name}?`, deps, h, graph) : null,
       () => own.length ? numeric(`How many files from this repo does ${name} import?`, own.length, h >>> 2, graph) : null,
-      () => {
-        const l = lines(p)
-        return { q: `Roughly how long is ${name}?`, options: ['Under 100 lines', '100 to 400 lines', 'Over 400 lines'],
-          answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : 'Counted from the file' }
-      },
+      () => estimated(p) ? null : lengthQuiz(),
     ]
+    function lengthQuiz(): Quiz {
+      const l = lines(p)
+      return { q: `Roughly how long is ${name}?`, options: ['Under 100 lines', '100 to 400 lines', 'Over 400 lines'],
+        answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : 'Counted from the file' }
+    }
     const start = h % makers.length
     const out: Quiz[] = []
     for (let i = 0; i < makers.length && out.length < count; i++) {
       const q = makers[(start + i) % makers.length]()
       if (q) out.push(q)
     }
-    return out
+    return out.length ? out : [lengthQuiz()] // unread file with no graph data: best guess from size
   }
 
   // districts and buildings
@@ -235,7 +236,7 @@ export function generate(f: Facts): World {
     // each row is tall enough for its biggest roof (1.5x size) plus the name label
     const roof = (r: Building[]) => Math.max(...r.map(b => b.size)) * 1.5
     const w = Math.max(320, ...rows.map(r => rowW(r) + 80))
-    const h = 62 + rows.reduce((t, r) => t + roof(r) + 34, 0)
+    const h = 62 + rows.reduce((t, r) => t + roof(r) + 34, 0) + 28 // bottom strip is a street for characters
     let top = -h / 2 + 58
     for (const r of rows) {
       let x = -rowW(r) / 2

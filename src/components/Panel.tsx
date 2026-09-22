@@ -3,30 +3,42 @@ import type { Building, District, World } from '../lib/generate.ts'
 import { CLS_COLOR } from '../game/world2d.ts'
 
 type Props = {
-  b: Building; district: District; world: World; cleared: boolean
-  onClear: () => void; onHit: () => void; onClose: () => void
+  b: Building; district: District; world: World; cleared: boolean; playerHp: number; maxHp: number
+  onClear: () => void; onHit: (damage: number) => void; onClose: () => void
 }
 
-export default function Panel({ b, district, world, cleared, onClear, onHit, onClose }: Props) {
+// Damage a fighter deals you for each wrong answer.
+export const DAMAGE: Record<string, number> = { Enemy: 10, 'Mini boss': 15, Boss: 25, 'Final boss': 34 }
+
+export default function Panel({ b, district, world, cleared, playerHp, maxHp, onClear, onHit, onClose }: Props) {
   const [fighting, setFighting] = useState(false)
-  const [round, setRound] = useState(0)
-  const [wrong, setWrong] = useState<number[]>([])
-  const [right, setRight] = useState(false)
+  const [turn, setTurn] = useState(0)          // questions asked so far; questions cycle
+  const [hits, setHits] = useState(0)          // correct answers landed
+  const [picked, setPicked] = useState<number | null>(null)
+  const [log, setLog] = useState('')
   const npc = b.cls === 'NPC'
   const quizzes = b.quizzes ?? []
-  const q = quizzes[round]
+  const need = quizzes.length                  // correct answers needed to win
+  const q = quizzes[turn % Math.max(1, need)]
   const color = cleared ? CLS_COLOR.cleared : CLS_COLOR[b.cls]
-  const hpLeft = cleared ? 0 : Math.round(b.hp * (1 - (round + (right ? 1 : 0)) / Math.max(1, quizzes.length)))
+  const hpLeft = cleared ? 0 : Math.round(b.hp * (1 - hits / Math.max(1, need)))
+  const damage = DAMAGE[b.cls] ?? 10
   const reveal = cleared || npc
   const fileUrl = b.more ? null : `https://github.com/${world.repo.owner}/${world.repo.name}/blob/${world.repo.branch}/${b.path}`
 
+  // Every answer is one exchange: right, you hit it; wrong, it hits you. Then the next question.
   const answer = (i: number) => {
-    if (i !== q.answer) { setWrong(w => [...w, i]); onHit(); return }
-    setRight(true)
-    setTimeout(() => {
-      if (round + 1 >= quizzes.length) onClear()
-      else { setRound(r => r + 1); setWrong([]); setRight(false) }
-    }, 650)
+    setPicked(i)
+    if (i === q.answer) {
+      const landed = hits + 1
+      setHits(landed)
+      setLog(landed >= need ? `${b.title} falls!` : `You hit ${b.title} for ${Math.round(b.hp / need).toLocaleString()}.`)
+      setTimeout(() => { if (landed >= need) onClear(); else { setTurn(t => t + 1); setPicked(null); setLog('') } }, 800)
+    } else {
+      setLog(`${b.title} hits you for ${damage}.`)
+      onHit(damage)
+      setTimeout(() => { setTurn(t => t + 1); setPicked(null); setLog('') }, 1400)
+    }
   }
 
   return (
@@ -37,7 +49,7 @@ export default function Panel({ b, district, world, cleared, onClear, onHit, onC
       <h3>{b.more ? district.path : b.path}</h3>
       {!npc && (
         <div className="hp">
-          <span>HP {hpLeft.toLocaleString()} / {b.hp.toLocaleString()}{quizzes.length > 1 && !cleared ? ` · ${quizzes.length} rounds` : ''}</span>
+          <span>HP {hpLeft.toLocaleString()} / {b.hp.toLocaleString()}{!cleared ? ` · ${need} hit${need > 1 ? 's' : ''} to win · hits for ${damage}` : ''}</span>
           <div className="bar"><i style={{ width: `${(hpLeft / b.hp) * 100}%` }} /></div>
         </div>
       )}
@@ -71,15 +83,19 @@ export default function Panel({ b, district, world, cleared, onClear, onHit, onC
       ) : npc ? (
         <p className="talk">“{b.talk}”</p>
       ) : q && !cleared ? (
-        <div className="quiz" key={round}>
-          {quizzes.length > 1 && <span className="src">Round {round + 1} of {quizzes.length}</span>}
+        <div className={`quiz${picked != null && picked !== q.answer ? ' hurt' : ''}`} key={turn}>
+          <div className="you">
+            <span>You · HP {playerHp} / {maxHp}</span>
+            <div className="bar"><i style={{ width: `${(playerHp / maxHp) * 100}%` }} /></div>
+          </div>
+          <span className="src">Turn {turn + 1} · {hits} / {need} hits landed</span>
           <p>{q.q}</p>
           {q.options.map((o, i) => (
-            <button key={i} disabled={right || wrong.includes(i)}
-              className={right && i === q.answer ? 'right' : wrong.includes(i) ? 'wrong' : ''}
+            <button key={i} disabled={picked != null}
+              className={picked != null && i === q.answer ? 'right' : picked === i ? 'wrong' : ''}
               onClick={() => answer(i)}>{o}</button>
           ))}
-          <span className="src">{q.source} · a wrong answer costs a heart</span>
+          {log ? <span className={`log${picked === q.answer ? ' good' : ''}`} role="status">{log}</span> : <span className="src">{q.source}</span>}
         </div>
       ) : null}
       {fileUrl && <a className="open" href={fileUrl} target="_blank" rel="noreferrer">Open on GitHub ↗</a>}

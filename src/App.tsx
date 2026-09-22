@@ -9,7 +9,8 @@ type Sample = { slug: string; label: string; language: string }
 const BASE = import.meta.env.BASE_URL
 const STEPS = ['Listing files', 'Reading code and history', 'Generating world']
 const DAY = 86_400_000
-const HEARTS = 5
+const MAX_HP = 100
+const HEAL = 25 // restored for each building you clear
 
 const store = {
   get<T>(k: string): T | null { try { return JSON.parse(localStorage.getItem(k) ?? 'null') } catch { return null } },
@@ -29,7 +30,7 @@ export default function App() {
   const [near, setNear] = useState<Building | null>(null)
   const [zone, setZone] = useState<District | null>(null)
   const [cleared, setCleared] = useState<Set<string>>(new Set())
-  const [hearts, setHearts] = useState(HEARTS)
+  const [hp, setHp] = useState(MAX_HP)
   const [toast, setToast] = useState('')
 
   const finalBoss = world?.districts.flatMap(d => d.buildings).find(b => b.cls === 'Final boss') ?? null
@@ -55,7 +56,7 @@ export default function App() {
     game.current!.setWorld(w)
     setCleared(c)
     setSelected(null)
-    setHearts(HEARTS)
+    setHp(MAX_HP)
     setWorld(w)
   }
 
@@ -95,17 +96,20 @@ export default function App() {
     const next = new Set(cleared).add(b.path)
     game.current!.cleared = next
     setCleared(next)
-    setHearts(h => Math.min(HEARTS, h + 1))
+    setHp(h => Math.min(MAX_HP, h + HEAL))
     store.set(`gq:cleared:${repoKey(world!)}`, [...next])
     if (b.cls === 'Final boss') setToast(`${b.title} is defeated. You conquered ${world!.repo.owner}/${world!.repo.name}!`)
   }
 
-  function hit(b: Building) {
-    if (hearts > 1) { setHearts(hearts - 1); return }
-    setSelected(null)
-    setHearts(HEARTS)
-    game.current!.respawn()
-    setToast(`Knocked out by ${b.title}. Back to README Village.`)
+  function hit(b: Building, damage: number) {
+    if (hp - damage > 0) { setHp(hp - damage); return }
+    setHp(0)
+    setTimeout(() => {
+      setSelected(null)
+      setHp(MAX_HP)
+      game.current!.respawn()
+      setToast(`Knocked out by ${b.title}. Back to README Village.`)
+    }, 1200)
   }
 
   const fighters = world ? world.districts.flatMap(d => d.buildings).filter(b => b.cls !== 'NPC') : []
@@ -143,7 +147,7 @@ export default function App() {
         {world && (
           <div className="hud">
             <b>{world.repo.owner}/{world.repo.name}{world.repo.stars ? `  ★ ${world.repo.stars.toLocaleString()}` : ''}</b>
-            <span className="hearts" aria-label={`${hearts} of ${HEARTS} hearts`}>{'♥'.repeat(hearts)}<span>{'♥'.repeat(HEARTS - hearts)}</span></span>
+            <span className={`php${hp <= 30 ? ' low' : ''}`}>HP {hp} / {MAX_HP}<i><b style={{ width: `${hp}%` }} /></i></span>
             <span>{zone ? zone.label : 'On the road'}</span>
             <span>Bosses {bosses.filter(b => cleared.has(b.path)).length} / {bosses.length} · Cleared {fighters.filter(b => cleared.has(b.path)).length} / {fighters.length}</span>
             {finalBoss && (cleared.has(finalBoss.path)
@@ -155,7 +159,7 @@ export default function App() {
         {near && !selected && <div className="hint">E · inspect {near.label}</div>}
         {selected && selectedDistrict && world && (
           <Panel key={selected.path} b={selected} district={selectedDistrict} world={world}
-            cleared={cleared.has(selected.path)} onClear={() => clear(selected)} onHit={() => hit(selected)} onClose={() => setSelected(null)} />
+            cleared={cleared.has(selected.path)} onClear={() => clear(selected)} playerHp={hp} maxHp={MAX_HP} onHit={d => hit(selected, d)} onClose={() => setSelected(null)} />
         )}
         {loading && (
           <div className="loading" aria-live="polite">

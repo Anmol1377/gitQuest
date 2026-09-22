@@ -39,8 +39,10 @@ Big repos stay walkable: dominant folders like `src/` and monorepo folders like 
 
 - Walk with **WASD** or the arrow keys, or click where you want to go. Press **E** to inspect a building. Click the minimap to fast-travel
 - **Quest:** the red arrow points to the Final Boss, the most imported file in the repo
-- **Fights** are questions built from the real code: "Which file imports `utils.js`?", "Which package does it use?". Enemies take 1 round, mini bosses 2, bosses 3, and the Final Boss 4
-- You have **5 hearts**. A wrong answer costs one, and losing all five sends you back to README Village. Clearing a building restores a heart
+- You walk on **roads and inside districts** only. Click anywhere and your character finds the way along the roads
+- **Fights** are questions built from the real code: "Which file imports `utils.js`?", "Which package does it use?". Each answer is one exchange: get it right and you hit the enemy, get it wrong and it hits you, and you see the correct answer. Then the next question comes
+- Enemies take 1 hit to beat, mini bosses 2, bosses 3, and the Final Boss 4. They hit back for 10, 15, 25 and 34 damage
+- You have **100 HP**. Clearing a building heals 25. At 0 HP you're knocked out and sent back to README Village
 - A building's stats stay hidden until you defeat it. Progress is saved per repo in your browser
 
 ## No API key needed
@@ -79,6 +81,7 @@ src/lib/analyze.ts    file filtering, districts, import parsing and resolution
 src/lib/generate.ts   repo facts → world.json (deterministic)
 src/lib/build.ts      fetch everything, then generate
 src/game/world2d.ts   canvas renderer: camera, movement, minimap
+src/game/walk.ts      walkable roads and districts, pathfinding
 src/App.tsx           input, loading, HUD
 src/components/Panel.tsx   inspect panel and challenges
 ```

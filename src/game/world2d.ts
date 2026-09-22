@@ -1,6 +1,7 @@
 // Draws a world.json on a 2D canvas and lets the player walk it.
 import type { World, Building, District } from '../lib/generate.ts'
 import { hash } from '../lib/generate.ts'
+import { findPath, gridOf, roadsOf, walkableAt, ROAD_W, type Grid } from './walk.ts'
 
 type Palette = { fill: string; edge: string; roof: string; wall: string }
 const THEME: Record<string, Palette> = {
@@ -40,6 +41,9 @@ export class Game {
   player = { x: 0, y: 0, dir: 1, step: 0 }
   cam = { x: 0, y: 0 }
   target: { x: number; y: number } | null = null
+  route: { x: number; y: number }[] = []
+  roads: number[][][] = []
+  grid: Grid = { cells: new Uint8Array(0), w: 0, h: 0 }
   pendingOpen: Building | null = null
   nearB: Building | null = null
   quest: Building | null = null
@@ -94,6 +98,7 @@ export class Game {
     this.player.x = this.world.spawn.x
     this.player.y = this.world.spawn.y
     this.target = this.pendingOpen = null
+    this.route = []
     this.keys = {}
   }
 
@@ -102,8 +107,11 @@ export class Game {
     this.districtOf.clear()
     for (const d of w.districts) for (const b of d.buildings) this.districtOf.set(b, d)
     this.buildings = [...this.districtOf.keys()]
+    this.roads = roadsOf(w)
+    this.grid = gridOf(w, this.roads)
     this.player = { x: w.spawn.x, y: w.spawn.y, dir: 1, step: 0 }
     this.target = this.pendingOpen = null
+    this.route = []
     this.particles = []
     this.zoneD = undefined
     const byId = new Map(w.districts.map(d => [d.id, d]))
@@ -112,7 +120,7 @@ export class Game {
       const d = homes[0] ?? w.districts[0]
       const h = hash(c.login)
       return { ...c, homes: homes.length ? homes : [d], color: `hsl(${h % 360} 70% 72%)`,
-        x: d.x - d.w / 2 + 30 + (h % Math.max(1, d.w - 60)), y: d.y + d.h / 2 + 30, tx: d.x, ty: d.y + d.h / 2 + 30 }
+        x: d.x - d.w / 2 + 30 + (h % Math.max(1, d.w - 60)), y: d.y + d.h / 2 - 16, tx: d.x, ty: d.y + d.h / 2 - 16 }
     })
     this.resize()
     this.cam.x = this.clampX(this.player.x)
@@ -142,24 +150,29 @@ export class Game {
       // fast travel: jump to the road just below the district you clicked on the map
       const wx = (sx - m.x) / m.s, wy = (sy - m.y) / m.s
       const d = this.world.districts.reduce((a, b) => Math.hypot(b.x - wx, b.y - wy) < Math.hypot(a.x - wx, a.y - wy) ? b : a)
-      this.player.x = d.x; this.player.y = d.y + d.h / 2 + 40
+      this.player.x = d.x; this.player.y = d.y + d.h / 2 - 14
       this.target = this.pendingOpen = null
+      this.route = []
       return
     }
     const wx = sx - this.W / 2 + this.cam.x, wy = sy - this.H / 2 + this.cam.y
     const hit = this.buildings.find(b => wx >= b.x && wx <= b.x + b.size && wy >= b.y - b.size * 0.5 && wy <= b.y + b.size)
-    if (hit) { this.pendingOpen = hit; this.target = { x: hit.x + hit.size / 2, y: hit.y + hit.size + 18 } }
-    else { this.pendingOpen = null; this.target = { x: wx, y: wy } }
+    this.pendingOpen = hit ?? null
+    this.walkTo(hit ? hit.x + hit.size / 2 : wx, hit ? hit.y + hit.size + 18 : wy)
   }
 
-  blocked(x: number, y: number) {
-    const w = this.world
-    if (x < 16 || y < 16 || x > w.width - 16 || y > w.height - 16) return true
-    return this.buildings.some(b => x > b.x - 8 && x < b.x + b.size + 8 && y > b.y - 4 && y < b.y + b.size + 6)
+  walkTo(x: number, y: number) {
+    const route = findPath(this.grid, this.player, { x, y })
+    if (!route) return
+    this.route = route
+    this.target = route[route.length - 1]
   }
+
+  blocked(x: number, y: number) { return !walkableAt(this.grid, x, y) }
 
   arrive() {
     this.target = null
+    this.route = []
     if (this.pendingOpen) { this.hooks.inspect(this.pendingOpen); this.pendingOpen = null }
   }
 
@@ -167,10 +180,10 @@ export class Game {
     const k = this.keys, p = this.player
     let dx = (k.d || k.arrowright ? 1 : 0) - (k.a || k.arrowleft ? 1 : 0)
     let dy = (k.s || k.arrowdown ? 1 : 0) - (k.w || k.arrowup ? 1 : 0)
-    if (dx || dy) { this.target = null; this.pendingOpen = null }
-    else if (this.target) {
-      const tx = this.target.x - p.x, ty = this.target.y - p.y, dist = Math.hypot(tx, ty)
-      if (dist < 6) this.arrive()
+    if (dx || dy) { this.target = null; this.pendingOpen = null; this.route = [] }
+    else if (this.route.length) {
+      const w = this.route[0], tx = w.x - p.x, ty = w.y - p.y, dist = Math.hypot(tx, ty)
+      if (dist < 6) { this.route.shift(); if (!this.route.length) this.arrive() }
       else { dx = tx / dist; dy = ty / dist }
     }
     const len = Math.hypot(dx, dy)
@@ -179,7 +192,7 @@ export class Game {
       const bx = this.blocked(nx, p.y), by = this.blocked(p.x, ny)
       if (!bx) p.x = nx
       if (!by) p.y = ny
-      if (bx && by && this.target) this.arrive()
+      if (bx && by && this.route.length) { this.route.shift(); if (!this.route.length) this.arrive() }
       if (dx) p.dir = Math.sign(dx)
       p.step += dt * 10
     }
@@ -202,7 +215,7 @@ export class Game {
       if (d < 4) {
         const home = n.homes[Math.floor(Math.random() * n.homes.length)]
         n.tx = home.x + (Math.random() - 0.5) * (home.w - 60)
-        n.ty = home.y + home.h / 2 + 24 + Math.random() * 16
+        n.ty = home.y + home.h / 2 - 12 - Math.random() * 10
       } else { n.x += (n.tx - n.x) / d * 45 * dt; n.y += (n.ty - n.y) / d * 45 * dt }
     }
     if (!this.reduce) {
@@ -281,17 +294,10 @@ export class Game {
 
   drawRoads() {
     const { ctx, world } = this
-    const byId = new Map(world.districts.map(d => [d.id, d]))
     const path = (pts: number[][]) => { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (const q of pts.slice(1)) ctx.lineTo(q[0], q[1]) }
-    const routes = world.roads.map(([a, b]) => {
-      const A = byId.get(a)!, B = byId.get(b)!
-      const mid = (A.y - A.h / 2 + B.y + B.h / 2) / 2
-      return A.y > B.y ? [[A.x, A.y], [A.x, mid], [B.x, mid], [B.x, B.y]] : [[A.x, A.y], [B.x, A.y], [B.x, B.y]]
-    })
-    const root = world.districts[0]
-    routes.push([[root.x, root.y], [root.x, world.height]])
+    const routes = this.roads
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-    for (const r of routes) { ctx.strokeStyle = '#2b3443'; ctx.lineWidth = 34; path(r); ctx.stroke() }
+    for (const r of routes) { ctx.strokeStyle = '#2b3443'; ctx.lineWidth = ROAD_W; path(r); ctx.stroke() }
     ctx.strokeStyle = '#3a4455'; ctx.lineWidth = 2; ctx.setLineDash([10, 12])
     for (const r of routes) { path(r); ctx.stroke() }
     ctx.setLineDash([])
@@ -391,7 +397,9 @@ export class Game {
   drawMap() {
     const { ctx, map: m, world } = this
     if (world.width <= this.W && world.height <= this.H) return
-    ctx.fillStyle = 'rgba(15,20,28,.85)'; ctx.fillRect(m.x - 4, m.y - 4, m.w + 8, m.h + 8)
+    ctx.fillStyle = '#0f141c'; ctx.fillRect(m.x - 4, m.y - 4, m.w + 8, m.h + 8)
+    ctx.strokeStyle = '#2b3443'; ctx.lineWidth = Math.max(1.5, ROAD_W * m.s)
+    for (const r of this.roads) { ctx.beginPath(); r.forEach(([x, y], i) => i ? ctx.lineTo(m.x + x * m.s, m.y + y * m.s) : ctx.moveTo(m.x + x * m.s, m.y + y * m.s)); ctx.stroke() }
     ctx.strokeStyle = '#2e394c'; ctx.lineWidth = 1; ctx.strokeRect(m.x - 4.5, m.y - 4.5, m.w + 9, m.h + 9)
     for (const d of world.districts) {
       ctx.fillStyle = (THEME[d.theme] ?? THEME.village2).edge
