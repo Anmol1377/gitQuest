@@ -49,6 +49,10 @@ canvas { display: block; width: 100%; height: min(72vh, 680px); min-height: 440p
 .quest { color: var(--boss); max-width: 34ch }
 .quest.done { color: var(--clear) }
 .toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font: 700 15px var(--display); letter-spacing: .03em; background: rgba(15,20,28,.94); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 6px; max-width: calc(100% - 24px); text-align: center; z-index: 2 }
+.fs { position: absolute; left: 12px; bottom: 12px; font: 12px var(--mono); color: var(--text); background: rgba(15,20,28,.85); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; display: flex; align-items: center; gap: 8px }
+.fs:hover { border-color: var(--accent); color: var(--accent) }
+.stage:fullscreen { border: 0; border-radius: 0 }
+.stage:fullscreen canvas { height: 100vh; min-height: 0 }
 .hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font: 700 14px var(--display); letter-spacing: .05em; background: rgba(15,20,28,.9); border: 1px solid var(--accent); color: var(--accent); padding: 6px 14px; border-radius: 6px; pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis }
 
 .loading { position: absolute; inset: 0; background: #0f141c; display: flex; flex-direction: column; justify-content: center; gap: 18px; padding: 0 12%; font: 14px var(--mono) }

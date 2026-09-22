@@ -24,6 +24,7 @@ export type Hooks = {
   inspect: (b: Building | null) => void
   near: (b: Building | null) => void
   zone: (d: District | null) => void
+  fullscreen: () => void
 }
 type Npc = { login: string; role: string; commits: number; homes: District[]; color: string; x: number; y: number; tx: number; ty: number }
 
@@ -78,6 +79,7 @@ export class Game {
       this.keys[k] = true
       if (k === 'e' && this.nearB) this.hooks.inspect(this.nearB)
       if (k === 'escape') this.hooks.inspect(null)
+      if (k === 'f' && !e.metaKey && !e.ctrlKey) this.hooks.fullscreen()
     })
     on('keyup', e => { this.keys[e.key.toLowerCase()] = false })
     on('blur', () => { this.keys = {} })

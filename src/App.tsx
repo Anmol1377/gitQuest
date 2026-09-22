@@ -20,6 +20,8 @@ const repoKey = (w: World) => `${w.repo.owner}/${w.repo.name}`.toLowerCase()
 
 export default function App() {
   const canvas = useRef<HTMLCanvasElement>(null)
+  const stage = useRef<HTMLDivElement>(null)
+  const [full, setFull] = useState(false)
   const game = useRef<Game | null>(null)
   const [world, setWorld] = useState<World | null>(null)
   const [samples, setSamples] = useState<Sample[]>([])
@@ -39,7 +41,9 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t) }, [toast])
 
   useEffect(() => {
-    const g = new Game(canvas.current!, { inspect: setSelected, near: setNear, zone: setZone })
+    const g = new Game(canvas.current!, { inspect: setSelected, near: setNear, zone: setZone, fullscreen: toggleFull })
+    const onFull = () => setFull(document.fullscreenElement === stage.current)
+    document.addEventListener('fullscreenchange', onFull)
     game.current = g
     fetch(`${BASE}samples/index.json`).then(r => r.json()).then((list: Sample[]) => {
       setSamples(list)
@@ -47,8 +51,14 @@ export default function App() {
       if (asked) { setInput(asked); generate(asked, list) }
       else if (list[0]) loadSample(list[0])
     }).catch(() => setError('Couldn’t load the demo worlds. Paste a repo above instead.'))
-    return () => g.destroy()
+    return () => { g.destroy(); document.removeEventListener('fullscreenchange', onFull) }
   }, [])
+
+  function toggleFull() {
+    if (document.fullscreenElement) document.exitFullscreen()
+    else stage.current?.requestFullscreen?.().catch(() => {})
+    game.current?.focus()
+  }
 
   function show(w: World) {
     const c = new Set(store.get<string[]>(`gq:cleared:${repoKey(w)}`) ?? [])
@@ -142,7 +152,7 @@ export default function App() {
       )}
       {error && <p className="error" role="alert">{error}</p>}
 
-      <div className="stage">
+      <div className="stage" ref={stage}>
         <canvas ref={canvas} tabIndex={0} aria-label="Repository world. Move with WASD or arrow keys, press E to inspect a building." />
         {world && (
           <div className="hud">
@@ -156,6 +166,9 @@ export default function App() {
           </div>
         )}
         {toast && <div className="toast" role="status">{toast}</div>}
+        {document.fullscreenEnabled && (
+          <button className="fs" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'}>{full ? '⤡ Exit' : '⤢ Full screen'} <kbd>F</kbd></button>
+        )}
         {near && !selected && <div className="hint">E · inspect {near.label}</div>}
         {selected && selectedDistrict && world && (
           <Panel key={selected.path} b={selected} district={selectedDistrict} world={world}
@@ -177,7 +190,7 @@ export default function App() {
       </div>
 
       <div className="under">
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to inspect · click the minimap to travel</span>
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to inspect · <kbd>F</kbd> full screen · click the minimap to travel</span>
         <span className="legend">
           <span><i className="sw" style={{ background: '#c9c2ae' }} />NPC</span>
           <span><i className="sw" style={{ background: '#8a93a6' }} />Enemy</span>
