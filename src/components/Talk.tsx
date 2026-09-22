@@ -1,25 +1,30 @@
 import { useState } from 'react'
-import type { Building, Character, World } from '../lib/generate.ts'
+import type { Character, World } from '../lib/generate.ts'
 
-export type TalkMemo = { tip?: string; healed?: boolean }
+export type TalkMemo = { tip?: string; tipKey?: string; healed?: boolean }
 type Props = {
-  c: Character; world: World; cleared: Set<string>; hp: number; maxHp: number; memo: TalkMemo
+  c: Character; world: World; cleared: Set<string>; hp: number; maxHp: number; memo: TalkMemo; usedTips: string[]
   onMemo: (m: TalkMemo) => void; onHeal: (amount: number) => void; onTravel: () => void; onClose: () => void
 }
 
 export const HEAL = 30
 const RANK: Record<string, number> = { 'Final boss': 4, Boss: 3, 'Mini boss': 2, Enemy: 1 }
 
-// The strongest enemy you haven't beaten, preferring the districts this person works in.
-function tipTarget(c: Character, world: World, cleared: Set<string>) {
-  const open = (ids?: string[]) => world.districts.filter(d => !ids || ids.includes(d.id))
-    .flatMap(d => d.buildings.map(b => [b, d] as const))
-    .filter(([b]) => b.quizzes?.length && !cleared.has(b.path))
-    .sort(([a], [b]) => RANK[b.cls] - RANK[a.cls] || b.hp - a.hp)
-  return open(c.homes)[0] ?? open()[0]
+// The strongest question nobody has told you yet: strongest undefeated enemy first, preferring
+// this person's districts, skipping any enemy + question another contributor already revealed.
+function pickTip(c: Character, world: World, cleared: Set<string>, used: string[]) {
+  const candidates = (ids?: string[]) => world.districts.filter(d => !ids || ids.includes(d.id))
+    .flatMap(d => d.buildings.map(b => ({ b, d })))
+    .filter(({ b }) => b.quizzes?.length && !cleared.has(b.path))
+    .sort((x, y) => RANK[y.b.cls] - RANK[x.b.cls] || y.b.hp - x.b.hp)
+  for (const list of [candidates(c.homes), candidates()])
+    for (const { b, d } of list)
+      for (let i = 0; i < b.quizzes!.length; i++)
+        if (!used.includes(`${b.path}#${i}`)) return { b, d, i }
+  return null
 }
 
-export default function Talk({ c, world, cleared, hp, maxHp, memo, onMemo, onHeal, onTravel, onClose }: Props) {
+export default function Talk({ c, world, cleared, hp, maxHp, memo, usedTips, onMemo, onHeal, onTravel, onClose }: Props) {
   const [line, setLine] = useState(memo.tip ?? '')
   const districts = world.districts.filter(d => c.homes.includes(d.id))
   const home = districts[0]
@@ -27,12 +32,12 @@ export default function Talk({ c, world, cleared, hp, maxHp, memo, onMemo, onHea
 
   const tip = () => {
     if (memo.tip) { setLine(memo.tip); return }
-    const t = tipTarget(c, world, cleared)
-    if (!t) { setLine('You’ve beaten everything I know about. Nothing left to tell.'); return }
-    const [b, d]: readonly [Building, typeof home] = t
-    const q = b.quizzes![0] // the first question it asks in a fight
-    const text = `About ${b.label} in ${d.label}: “${q.q}” It’s ${q.options[q.answer]}. That’s the first thing it’ll ask you.`
-    onMemo({ ...memo, tip: text })
+    const t = pickTip(c, world, cleared, usedTips)
+    if (!t) { setLine('I’ve got nothing you haven’t heard. Go read some code.'); return }
+    const q = t.b.quizzes![t.i] // question i comes up on turn i of the fight
+    const when = t.i === 0 ? 'It asks that first' : `It asks that in round ${t.i + 1}`
+    const text = `${t.b.title} (${t.b.label}, ${t.d.label}) will ask: ‘${q.q}’ The answer is ${q.options[q.answer]}. ${when}.`
+    onMemo({ ...memo, tip: text, tipKey: `${t.b.path}#${t.i}` })
     setLine(text)
   }
   const heal = () => {

@@ -187,7 +187,7 @@ export default function App() {
         {!selected && !talk && (near || nearChar) && <div className="hint">{near ? `E · inspect ${near.label}` : `E · talk to ${nearChar!.login}`}</div>}
         {talk && world && (
           <Talk key={talk.login} c={talk} world={world} cleared={cleared} hp={hp} maxHp={MAX_HP}
-            memo={memos[talk.login] ?? {}} onMemo={m => setMemos(ms => ({ ...ms, [talk.login]: m }))}
+            memo={memos[talk.login] ?? {}} usedTips={Object.values(memos).flatMap(m => m.tipKey ?? [])} onMemo={m => setMemos(ms => ({ ...ms, [talk.login]: m }))}
             onHeal={n => setHp(h => Math.min(MAX_HP, h + n))}
             onTravel={() => { game.current!.travelTo(talk.homes[0]); endTalk() }} onClose={endTalk} />
         )}
