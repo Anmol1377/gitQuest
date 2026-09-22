@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Building, District, World } from '../lib/generate.ts'
+import { ago, type Building, type District, type World } from '../lib/generate.ts'
 import { CLS_COLOR } from '../game/world2d.ts'
 
 type Props = {
@@ -27,17 +27,7 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
   const reveal = cleared || npc
   const fileUrl = b.more ? null : `https://github.com/${world.repo.owner}/${world.repo.name}/blob/${world.repo.branch}/${b.path}`
 
-  // Study the real file before the fight. Same no-API sources the world was built from.
-  const readCode = async () => {
-    setCode('')
-    const { owner, name, branch } = world.repo
-    const file = b.path.split('/').map(encodeURIComponent).join('/')
-    for (const url of [`https://cdn.jsdelivr.net/gh/${owner}/${name}@${branch}/${file}`, `https://raw.githubusercontent.com/${owner}/${name}/${branch}/${file}`]) {
-      const text = await fetch(url).then(r => (r.ok ? r.text() : null)).catch(() => null)
-      if (text != null) { setCode(text); return }
-    }
-    setCode('// Couldn\u2019t load this file. Try "Open on GitHub" below.')
-  }
+  const readCode = async () => { setCode(''); setCode(await fetchSource(world, b.path)) }
 
   // Every answer is one exchange: right, you hit it; wrong, it hits you. Then the next question.
   const answer = (i: number) => {
@@ -78,6 +68,9 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
           <div><dt>Lines</dt><dd>{reveal ? b.lines.toLocaleString() : '???'}</dd></div>
           <div><dt>District</dt><dd style={{ fontSize: 14 }}>{district.label}</dd></div>
         </dl>
+      )}
+      {b.history && (
+        <span className="src">Last changed {ago(b.history.lastDays)}{b.history.author ? ` by ${b.history.author}` : ''} · {b.history.commits >= 100 ? '~' : ''}{b.history.commits} commits</span>
       )}
       <div className="chips">
         {b.hot && <span className="chip hot">Hot zone</span>}
@@ -125,8 +118,19 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
 
 const KEY_LINE = /^\s*(import\b|export\b|from\s+\S+\s+import\b|package\b|func\s|def\s|class\s|function\s|const\s+\w+\s*=\s*require\()|require\(/
 
+// Study the real file. Same no-API sources the world was built from.
+export async function fetchSource(world: World, path: string) {
+  const { owner, name, branch } = world.repo
+  const file = path.split('/').map(encodeURIComponent).join('/')
+  for (const url of [`https://cdn.jsdelivr.net/gh/${owner}/${name}@${branch}/${file}`, `https://raw.githubusercontent.com/${owner}/${name}/${branch}/${file}`]) {
+    const text = await fetch(url).then(r => (r.ok ? r.text() : null)).catch(() => null)
+    if (text != null) return text
+  }
+  return '// Couldn\u2019t load this file. Try "Open on GitHub".'
+}
+
 // Full-screen reader. Native <dialog>: Esc closes it and focus stays inside.
-function CodeView({ text, path, fight, onClose, onFight }: { text: string; path: string; fight: string | null; onClose: () => void; onFight: () => void }) {
+export function CodeView({ text, path, fight, onClose, onFight }: { text: string; path: string; fight: string | null; onClose: () => void; onFight: () => void }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => { ref.current?.showModal() }, [])
   const lines = text.replace(/\n$/, '').split('\n')

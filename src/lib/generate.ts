@@ -11,7 +11,12 @@ export type Facts = {
   contributors: { login: string; commits: number }[]
   truncated: boolean
   apiCalls: number
+  fileActivity?: Record<string, Activity> // bosses only
+  issues?: IssueFact[]
+  pulls?: PullFact[]
 }
+export type IssueFact = { number: number; title: string; body: string; labels: string[]; createdAt: string; comments: number; user: string }
+export type PullFact = { number: number; title: string; branch: string; state: 'open' | 'merged'; createdAt: string; mergedAt: string | null; user: string }
 
 export type Cls = 'NPC' | 'Enemy' | 'Mini boss' | 'Boss' | 'Final boss'
 export type Quiz = { q: string; options: string[]; answer: number; source: string }
@@ -20,7 +25,12 @@ export type Building = {
   deps: number; lines: number; imports: string[]; abilities: string[]
   hot: boolean; ghost: boolean; x: number; y: number; size: number
   talk?: string; quizzes?: Quiz[]; more?: number
+  history?: { commits: number; lastDays: number | null; author: string | null }
 }
+// Open issues become bug monsters; PRs become gates (locked while open, raised once merged).
+// Both are placed in the district of the file their text mentions (a best guess).
+export type Bug = { number: number; title: string; labels: string[]; ageDays: number; comments: number; user: string; district: string; building: string | null; x: number; y: number }
+export type Gate = { number: number; title: string; state: 'open' | 'merged'; ageDays: number; user: string; district: string; building: string | null; x: number; y: number }
 export type District = {
   id: string; label: string; path: string; theme: string
   x: number; y: number; w: number; h: number
@@ -29,9 +39,11 @@ export type District = {
 }
 export type Character = { login: string; role: string; commits: number; homes: string[] }
 export type World = {
-  version: 2
+  version: 3
   repo: RepoInfo
   districts: District[]
+  bugs: Bug[]
+  gates: Gate[]
   roads: [string, string][]
   characters: Character[]
   width: number; height: number; spawn: { x: number; y: number }
@@ -83,6 +95,8 @@ const GAP = 36
 const SIZE: Record<Cls, number> = { NPC: 32, Enemy: 42, 'Mini boss': 54, Boss: 66, 'Final boss': 84 }
 const ROUNDS: Record<Cls, number> = { NPC: 0, Enemy: 1, 'Mini boss': 2, Boss: 3, 'Final boss': 4 }
 const ROAD = 150
+const YARD = 56 // extra plot height for bugs and gates
+const SLOT = 46
 
 export function generate(f: Facts): World {
   const paths = f.files.map(x => x.path)
@@ -211,11 +225,15 @@ export function generate(f: Facts): World {
       const c = cls.get(p)!
       const s = score.get(p)!
       const dup = names.filter(x => x === baseName(p)).length > 1
+      const fa = f.fileActivity?.[p] // per-file history (bosses) beats the district's
       const b: Building = {
         path: p, name: baseName(p), label: dup ? shortName(p) : baseName(p), title: titleOf(p, c), cls: c, hp: Math.max(100, Math.round(s * 100)),
         deps: dependents.get(p) ?? 0, lines: lines(p), imports: imports.get(p) ?? [], abilities: c === 'NPC' ? [] : abilitiesOf(p),
-        hot: hot && i < 2 && c !== 'NPC', ghost, x: 0, y: 0, size: SIZE[c] + Math.round(4 * Math.min(1, s / maxScore)),
+        hot: fa ? fa.lastDays != null && fa.lastDays <= 14 && fa.commits >= 10 : hot && i < 2 && c !== 'NPC',
+        ghost: fa ? fa.lastDays != null && fa.lastDays > 365 : ghost,
+        x: 0, y: 0, size: SIZE[c] + Math.round(4 * Math.min(1, s / maxScore)),
       }
+      if (fa) b.history = { commits: fa.commits, lastDays: fa.lastDays, author: Object.entries(fa.authors).sort((x, y) => y[1] - x[1])[0]?.[0] ?? null }
       if (c === 'NPC') b.talk = talkOf(p, b)
       else b.quizzes = quizzesOf(p, ROUNDS[c])
       return b
@@ -262,6 +280,30 @@ export function generate(f: Facts): World {
       `Keep walking. The real trouble is up the road.`,
     ], p)
   }
+
+  // Bugs and gates: find the building (or district) whose name the issue/PR text mentions.
+  const shownBuildings = districts.flatMap(d => d.buildings.filter(b => !b.more).map(b => ({ b, d })))
+  const word = (t: string, w: string) => new RegExp(`(^|[^a-z0-9])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(t)
+  // Strongest evidence wins: a full file name anywhere (events.js), a distinctive name anywhere
+  // (ReactFiberHooks, stream_utils), or a plain word only if it's in the title.
+  const place = (title: string, body: string) => {
+    const all = `${title}\n${body}`.toLowerCase(), head = title.toLowerCase()
+    const scored = shownBuildings.map(x => {
+      const name = x.b.name.toLowerCase(), stem = name.replace(/\.[^.]+$/, '')
+      const distinctive = /[A-Z].*[A-Z]|[_\-\d]/.test(x.b.name.replace(/\.[^.]+$/, '').slice(1)) && stem.length >= 6
+      const score = word(all, name) ? 3 : distinctive && word(all, stem) ? 2
+        : stem.length >= 4 && !/^(index|main|init|__init__|mod|lib|utils?|types?|constants?)$/.test(stem) && word(head, stem) ? 1 : 0
+      return { ...x, score, len: stem.length }
+    }).filter(x => x.score).sort((a, b) => b.score - a.score || b.len - a.len)
+    if (scored[0]) return { d: scored[0].d, b: scored[0].b.path }
+    const dist = districts.find(d => { const seg = d.path.split('/').filter(Boolean).pop()?.toLowerCase() ?? ''; return seg.length >= 3 && word(head, seg) })
+    return { d: dist ?? districts[0], b: null }
+  }
+  const issuesAt = (f.issues ?? []).map(i => ({ i, at: place(i.title, i.body) }))
+  const pullsAt = (f.pulls ?? []).map(p => ({ p, at: place(`${p.title} ${p.branch.replace(/[-_/]/g, ' ')}`, '') }))
+  // districts with bugs or gates get a yard row between the buildings and the street
+  const yard = new Set([...issuesAt, ...pullsAt].map(x => x.at.d))
+  for (const d of yard) { d.h += YARD; for (const b of d.buildings) b.y -= YARD / 2 }
 
   // roads: maximum spanning tree over cross-district imports, rooted at the village
   const ids = districts.map(d => d.id)
@@ -323,10 +365,29 @@ export function generate(f: Facts): World {
     return { login: c.login, commits: c.commits, homes: hs, role: ROLE[byId.get(hs[0])!.theme] }
   })
 
+  const days = (iso: string) => Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 86_400_000))
+  const slots = new Map<string, number>()
+  const spot = (d: District, fromRight: boolean) => { // yard row: bugs fill from the left, gates from the right
+    const key = d.id + (fromRight ? '>' : '<'), i = slots.get(key) ?? 0
+    slots.set(key, i + 1)
+    if (i >= Math.max(1, Math.floor((d.w / 2 - 30) / SLOT) + 1)) return null // half the row each
+    return { x: Math.round(fromRight ? d.x + d.w / 2 - 30 - i * SLOT : d.x - d.w / 2 + 30 + i * SLOT), y: Math.round(d.y + d.h / 2 - 28 - 16) }
+  }
+  const bugs: Bug[] = issuesAt.flatMap(({ i, at }) => {
+    const pos = spot(at.d, false)
+    return pos ? [{ number: i.number, title: i.title, labels: i.labels, ageDays: days(i.createdAt), comments: i.comments, user: i.user, district: at.d.id, building: at.b, ...pos }] : []
+  })
+  const gates: Gate[] = pullsAt.flatMap(({ p, at }) => {
+    const pos = spot(at.d, true)
+    return pos ? [{ number: p.number, title: p.title, state: p.state, ageDays: days(p.mergedAt ?? p.createdAt), user: p.user, district: at.d.id, building: at.b, ...pos }] : []
+  })
+
   return {
-    version: 2,
+    version: 3,
     repo: f.repo,
     districts,
+    bugs,
+    gates,
     roads: [...parent].map(([b, a]) => [a, b]),
     characters,
     width: Math.round(maxX - minX + 2 * M),

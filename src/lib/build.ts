@@ -1,6 +1,6 @@
 import { GitHub, parseRepo, rawFiles, jsdelivrFiles } from './github.ts'
 import { keepFile, pickDistricts, SOURCE_EXT, ext } from './analyze.ts'
-import { generate, type Activity, type Facts, type RepoInfo, type World } from './generate.ts'
+import { generate, type Facts, type RepoInfo, type World } from './generate.ts'
 
 export type Progress = (step: 0 | 1 | 2, done: number, total: number) => void
 
@@ -27,7 +27,7 @@ export async function buildWorld(input: string, progress: Progress = () => {}, t
 }
 
 // Structure and code come from jsDelivr's GitHub mirror (no API, no limit).
-// Commit history, contributors and stars use the GitHub API as optional extras:
+// History, contributors, stars, issues and PRs use the GitHub API as optional extras:
 // if the visitor's hourly limit is used up, the world still builds without them.
 export async function fetchFacts(input: string, progress: Progress = () => {}, token?: string): Promise<Facts> {
   const parsed = parseRepo(input)
@@ -61,29 +61,21 @@ export async function fetchFacts(input: string, progress: Progress = () => {}, t
   for (let i = 0; toRead.length < MAX_READ && queues.some(q => i < q.length); i++)
     for (const q of queues) if (i < q.length && toRead.length < MAX_READ) toRead.push(q[i])
 
-  const busy = groups.filter(g => g.id !== 'root' && g.id !== '*').slice(0, MAX_ACTIVITY)
-  let total = toRead.length + busy.length + 2
+  let total = toRead.length
   let done = 0
   const tick = () => progress(1, ++done, total)
+  const grow = (n: number) => { total += n }
 
-  const activity: Record<string, Activity> = {}
-  const optional = <T,>(p: Promise<T>) => p.catch(() => null).finally(tick)
-  const [contents, contributors, info] = await Promise.all([
-    rawFiles(repo.owner, repo.name, repo.branch, toRead, tick),
-    optional(gh.contributors(repo.owner, repo.name)),
-    listing ? optional(gh.repo(owner, parsed.repo)) : Promise.resolve(null),
-    ...busy.map(g => optional(gh.activity(repo.owner, repo.name, g.path.replace(/\/$/, '')).then(a => { activity[g.id] = a }))),
-  ])
-  if (info) repo = { ...info, language: info.language || repo.language, branch: repo.branch }
-  const facts: Facts = { repo, files, contents, activity, contributors: contributors ?? [], truncated, apiCalls: gh.calls }
-
-  await readBuildings(facts, n => { total += n }, tick)
+  const contents = await rawFiles(repo.owner, repo.name, repo.branch, toRead, tick)
+  const facts: Facts = { repo, files, contents, activity: {}, contributors: [], truncated, apiCalls: gh.calls }
+  await readBuildings(facts, grow, tick)
+  await enrich(facts, gh, grow, tick, !listing)
   return facts
 }
 
-// Second pass: every file that became a building gets read, so its questions come from real code.
+// Every file that became a building gets read, so its questions come from real code.
+// Reading changes the rankings a little, so repeat until every shown building has been read.
 export async function readBuildings(facts: Facts, onCount: (n: number) => void = () => {}, onEach?: () => void) {
-  // Reading changes the rankings a little, so repeat until every shown building has been read.
   let read = 0
   for (let pass = 0; pass < 3; pass++) {
     const missing = generate(facts).districts.flatMap(d => d.buildings)
@@ -94,4 +86,27 @@ export async function readBuildings(facts: Facts, onCount: (n: number) => void =
     read += missing.length
   }
   return read
+}
+
+// Optional GitHub API extras. Fetches only what's missing, so cached facts can be topped up cheaply.
+// Any call that fails (usually the hourly limit) is skipped and retried next time.
+export async function enrich(facts: Facts, gh = new GitHub(), onCount: (n: number) => void = () => {}, onEach?: () => void, haveRepoInfo = false) {
+  const { owner, name } = facts.repo
+  const world = generate(facts)
+  const busy = world.districts.filter(d => d.id !== 'root' && d.id !== '*').slice(0, MAX_ACTIVITY).filter(d => !facts.activity[d.id])
+  const bosses = world.districts.flatMap(d => d.buildings)
+    .filter(b => (b.cls === 'Boss' || b.cls === 'Final boss') && !facts.fileActivity?.[b.path])
+  const jobs: (() => Promise<unknown>)[] = [
+    ...(!haveRepoInfo && !facts.repo.stars ? [() => gh.repo(owner, name).then(r => { facts.repo = { ...r, language: r.language || facts.repo.language, branch: facts.repo.branch } })] : []),
+    ...(!facts.contributors.length ? [() => gh.contributors(owner, name).then(c => { facts.contributors = c })] : []),
+    ...(!facts.issues ? [() => gh.issues(owner, name).then(i => { facts.issues = i })] : []),
+    ...(!facts.pulls ? [() => gh.pulls(owner, name).then(p => { facts.pulls = p })] : []),
+    ...busy.map(d => () => gh.activity(owner, name, d.path.replace(/\/$/, '')).then(a => { facts.activity[d.id] = a })),
+    ...bosses.map(b => () => gh.activity(owner, name, b.path).then(a => { (facts.fileActivity ??= {})[b.path] = a })),
+  ]
+  onCount(jobs.length)
+  const before = gh.calls
+  await Promise.all(jobs.map(j => j().catch(() => {}).finally(() => onEach?.())))
+  facts.apiCalls += gh.calls - before
+  return jobs.length
 }

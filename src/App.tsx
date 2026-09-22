@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { Game } from './game/world2d.ts'
+import { Game, bugKey, targetKey, type Target } from './game/world2d.ts'
 import { buildWorld } from './lib/build.ts'
 import { parseRepo } from './lib/github.ts'
-import type { Building, Character, District, World } from './lib/generate.ts'
+import type { Building, District, World } from './lib/generate.ts'
 import Panel from './components/Panel.tsx'
 import Talk, { type TalkMemo } from './components/Talk.tsx'
+import { BugPanel, GatePanel, BUG_HEAL, GATE_HEAL } from './components/Encounter.tsx'
 
 type Sample = { slug: string; label: string; language: string }
 const BASE = import.meta.env.BASE_URL
@@ -18,21 +19,25 @@ const store = {
   set(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)) } catch { /* full or blocked */ } },
 }
 const repoKey = (w: World) => `${w.repo.owner}/${w.repo.name}`.toLowerCase()
+const hintFor = (t: Target) =>
+  t.kind === 'building' ? `E · inspect ${t.b.label}` : t.kind === 'char' ? `E · talk to ${t.c.login}`
+    : t.kind === 'bug' ? `E · bug #${t.bug.number}` : `E · PR #${t.gate.number}`
 
 export default function App() {
   const canvas = useRef<HTMLCanvasElement>(null)
+  const canvas3d = useRef<HTMLCanvasElement>(null)
   const stage = useRef<HTMLDivElement>(null)
-  const [full, setFull] = useState(false)
   const game = useRef<Game | null>(null)
+  const [full, setFull] = useState(false)
+  const [mode, setMode] = useState<'2d' | '3d'>('2d')
   const [world, setWorld] = useState<World | null>(null)
   const [samples, setSamples] = useState<Sample[]>([])
   const [input, setInput] = useState('')
+  const [current, setCurrent] = useState('') // which demo button is lit
   const [loading, setLoading] = useState<number[] | null>(null) // [step, done, total]
   const [error, setError] = useState('')
-  const [selected, setSelected] = useState<Building | null>(null)
-  const [near, setNear] = useState<Building | null>(null)
-  const [nearChar, setNearChar] = useState<Character | null>(null)
-  const [talk, setTalk] = useState<Character | null>(null)
+  const [open, setOpen] = useState<Target | null>(null)
+  const [near, setNear] = useState<Target | null>(null)
   const [memos, setMemos] = useState<Record<string, TalkMemo>>({})
   const [zone, setZone] = useState<District | null>(null)
   const [cleared, setCleared] = useState<Set<string>>(new Set())
@@ -45,11 +50,7 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t) }, [toast])
 
   useEffect(() => {
-    const g = new Game(canvas.current!, {
-      inspect: b => { setSelected(b); endTalk() },
-      talk: c => { setSelected(null); setTalk(c); g.talking = c.login },
-      near: setNear, nearChar: setNearChar, zone: setZone, fullscreen: toggleFull,
-    })
+    const g = new Game(canvas.current!, { open: openTarget, near: setNear, zone: setZone, fullscreen: toggleFull })
     const onFull = () => setFull(document.fullscreenElement === stage.current)
     document.addEventListener('fullscreenchange', onFull)
     game.current = g
@@ -59,12 +60,14 @@ export default function App() {
       if (asked) { setInput(asked); generate(asked, list) }
       else if (list[0]) loadSample(list[0])
     }).catch(() => setError('Couldn’t load the demo worlds. Paste a repo above instead.'))
+    const view = new URLSearchParams(location.search).get('view')
+    if (view === '3d' || (view !== '2d' && store.get<string>('gq:mode') === '3d')) switchMode('3d')
     return () => { g.destroy(); document.removeEventListener('fullscreenchange', onFull) }
   }, [])
 
-  function endTalk() {
-    setTalk(null)
-    if (game.current) game.current.talking = null
+  function openTarget(t: Target | null) {
+    setOpen(t)
+    if (game.current) game.current.talking = t?.kind === 'char' ? t.c.login : null
   }
 
   function toggleFull() {
@@ -73,13 +76,29 @@ export default function App() {
     game.current?.focus()
   }
 
+  // three.js loads only when someone asks for 3D
+  async function switchMode(next: '2d' | '3d') {
+    const g = game.current!
+    if (next === '3d') {
+      try {
+        const { World3D } = await import('./game/world3d.ts')
+        g.setView3D(new World3D(canvas3d.current!))
+      } catch {
+        setToast('3D isn’t available in this browser (WebGL is off). Staying in 2D.')
+        return
+      }
+    } else g.setView3D(null)
+    setMode(next)
+    store.set('gq:mode', next)
+    g.focus()
+  }
+
   function show(w: World) {
     const c = new Set(store.get<string[]>(`gq:cleared:${repoKey(w)}`) ?? [])
     game.current!.cleared = c
     game.current!.setWorld(w)
     setCleared(c)
-    setSelected(null)
-    endTalk()
+    openTarget(null)
     setMemos({})
     setHp(MAX_HP)
     setWorld(w)
@@ -89,6 +108,7 @@ export default function App() {
     setError('')
     const w: World = await fetch(`${BASE}samples/${s.slug}.json`).then(r => r.json())
     show(w)
+    setCurrent(s.label.toLowerCase())
     history.replaceState(null, '', `?repo=${s.label}`)
   }
 
@@ -99,15 +119,16 @@ export default function App() {
     const sample = list.find(s => s.label.toLowerCase() === key)
     if (sample) return loadSample(sample)
     const cached = store.get<{ at: number; world: World }>(`gq:world:${key}`)
-    if (cached && cached.world.version === 2 && Date.now() - cached.at < DAY) { show(cached.world); history.replaceState(null, '', `?repo=${key}`); return }
+    if (cached && cached.world.version === 3 && Date.now() - cached.at < DAY) { show(cached.world); history.replaceState(null, '', `?repo=${key}`); return }
 
     setError('')
-    setSelected(null)
+    openTarget(null)
     setLoading([0, 0, 1])
     try {
       const w = await buildWorld(raw, (step, done, total) => setLoading([step, done, total]))
       store.set(`gq:world:${key}`, { at: Date.now(), world: w })
       show(w)
+      setCurrent(key)
       history.replaceState(null, '', `?repo=${p.owner}/${p.repo}`)
       game.current!.focus()
     } catch (e) {
@@ -117,30 +138,57 @@ export default function App() {
     }
   }
 
-  function clear(b: Building) {
-    const next = new Set(cleared).add(b.path)
+  function markCleared(key: string, heal: number) {
+    const next = new Set(cleared).add(key)
     game.current!.cleared = next
     setCleared(next)
-    setHp(h => Math.min(MAX_HP, h + HEAL))
+    setHp(h => Math.min(MAX_HP, h + heal))
     store.set(`gq:cleared:${repoKey(world!)}`, [...next])
+  }
+
+  function clearBuilding(b: Building) {
+    markCleared(b.path, HEAL)
     if (b.cls === 'Final boss') setToast(`${b.title} is defeated. You conquered ${world!.repo.owner}/${world!.repo.name}!`)
   }
 
-  function hit(b: Building, damage: number) {
+  function hit(by: string, damage: number) {
     if (hp - damage > 0) { setHp(hp - damage); return }
     setHp(0)
     setTimeout(() => {
-      setSelected(null)
+      openTarget(null)
       setHp(MAX_HP)
       game.current!.respawn()
-      setToast(`Knocked out by ${b.title}. Back to README Village.`)
+      setToast(`Knocked out by ${by}. Back to README Village.`)
     }, 1200)
   }
 
   const fighters = world ? world.districts.flatMap(d => d.buildings).filter(b => b.cls !== 'NPC') : []
   const bosses = fighters.filter(b => b.cls === 'Boss' || b.cls === 'Final boss')
-  const selectedDistrict = selected && world?.districts.find(d => d.buildings.includes(selected))
-  const current = world && `${world.repo.owner}/${world.repo.name}`.toLowerCase()
+  const bugsLeft = world ? world.bugs.filter(b => !cleared.has(bugKey(b))).length : 0
+
+  function renderOpen() {
+    if (!open || !world) return null
+    if (open.kind === 'building') {
+      const b = open.b, d = world.districts.find(d => d.buildings.includes(b))!
+      return <Panel key={b.path} b={b} district={d} world={world} cleared={cleared.has(b.path)} playerHp={hp} maxHp={MAX_HP}
+        onClear={() => clearBuilding(b)} onHit={n => hit(b.title, n)} onClose={() => openTarget(null)} />
+    }
+    if (open.kind === 'char') {
+      const c = open.c
+      return <Talk key={c.login} c={c} world={world} cleared={cleared} hp={hp} maxHp={MAX_HP}
+        memo={memos[c.login] ?? {}} usedTips={Object.values(memos).flatMap(m => m.tipKey ?? [])} onMemo={m => setMemos(ms => ({ ...ms, [c.login]: m }))}
+        onHeal={n => setHp(h => Math.min(MAX_HP, h + n))}
+        onTravel={() => { game.current!.travelTo(c.homes[0]); openTarget(null) }} onClose={() => openTarget(null)} />
+    }
+    if (open.kind === 'bug') {
+      const bug = open.bug
+      return <BugPanel key={bugKey(bug)} bug={bug} world={world} squashed={cleared.has(bugKey(bug))}
+        onSquash={() => markCleared(bugKey(bug), BUG_HEAL)} onHit={n => hit(`bug #${bug.number}`, n)} onClose={() => openTarget(null)} />
+    }
+    const gate = open.gate
+    return <GatePanel key={targetKey(open)} gate={gate} world={world} used={cleared.has(targetKey(open))}
+      onPass={() => markCleared(targetKey(open), GATE_HEAL)} onClose={() => openTarget(null)} />
+  }
 
   return (
     <div className="wrap">
@@ -167,34 +215,32 @@ export default function App() {
       )}
       {error && <p className="error" role="alert">{error}</p>}
 
-      <div className="stage" ref={stage}>
-        <canvas ref={canvas} tabIndex={0} aria-label="Repository world. Move with WASD or arrow keys, press E to inspect a building." />
+      <div className={`stage${mode === '3d' ? ' is3d' : ''}`} ref={stage}>
+        <canvas ref={canvas3d} className="c3d" aria-hidden="true" />
+        <canvas ref={canvas} tabIndex={0} aria-label="Repository world. Move with WASD or arrow keys, press E to interact." />
         {world && (
           <div className="hud">
             <b>{world.repo.owner}/{world.repo.name}{world.repo.stars ? `  ★ ${world.repo.stars.toLocaleString()}` : ''}</b>
             <span className={`php${hp <= 30 ? ' low' : ''}`}>HP {hp} / {MAX_HP}<i><b style={{ width: `${hp}%` }} /></i></span>
             <span>{zone ? zone.label : 'On the road'}</span>
             <span>Bosses {bosses.filter(b => cleared.has(b.path)).length} / {bosses.length} · Cleared {fighters.filter(b => cleared.has(b.path)).length} / {fighters.length}</span>
+            {world.bugs.length > 0 && <span>Bugs left {bugsLeft} / {world.bugs.length}</span>}
             {finalBoss && (cleared.has(finalBoss.path)
               ? <span className="quest done">Quest complete</span>
               : <span className="quest">Quest: defeat {finalBoss.title}{finalDistrict ? ` in ${finalDistrict.label}` : ''}</span>)}
           </div>
         )}
         {toast && <div className="toast" role="status">{toast}</div>}
-        {document.fullscreenEnabled && (
-          <button className="fs" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'}>{full ? '⤡ Exit' : '⤢ Full screen'} <kbd>F</kbd></button>
-        )}
-        {!selected && !talk && (near || nearChar) && <div className="hint">{near ? `E · inspect ${near.label}` : `E · talk to ${nearChar!.login}`}</div>}
-        {talk && world && (
-          <Talk key={talk.login} c={talk} world={world} cleared={cleared} hp={hp} maxHp={MAX_HP}
-            memo={memos[talk.login] ?? {}} usedTips={Object.values(memos).flatMap(m => m.tipKey ?? [])} onMemo={m => setMemos(ms => ({ ...ms, [talk.login]: m }))}
-            onHeal={n => setHp(h => Math.min(MAX_HP, h + n))}
-            onTravel={() => { game.current!.travelTo(talk.homes[0]); endTalk() }} onClose={endTalk} />
-        )}
-        {selected && selectedDistrict && world && (
-          <Panel key={selected.path} b={selected} district={selectedDistrict} world={world}
-            cleared={cleared.has(selected.path)} onClear={() => clear(selected)} playerHp={hp} maxHp={MAX_HP} onHit={d => hit(selected, d)} onClose={() => setSelected(null)} />
-        )}
+        <div className="corner">
+          <button className="fs" onClick={() => switchMode(mode === '3d' ? '2d' : '3d')} aria-label={`Switch to ${mode === '3d' ? '2D' : '3D'} view`}>
+            {mode === '3d' ? '▦ 2D view' : '◆ 3D view'}
+          </button>
+          {document.fullscreenEnabled && (
+            <button className="fs" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'}>{full ? '⤡ Exit' : '⤢ Full screen'} <kbd>F</kbd></button>
+          )}
+        </div>
+        {!open && near && <div className="hint">{hintFor(near)}</div>}
+        {renderOpen()}
         {loading && (
           <div className="loading" aria-live="polite">
             {STEPS.map((label, i) => {
@@ -211,19 +257,20 @@ export default function App() {
       </div>
 
       <div className="under">
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to inspect or talk · <kbd>F</kbd> full screen · click the minimap to travel</span>
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to interact · <kbd>F</kbd> full screen · click the minimap to travel</span>
         <span className="legend">
           <span><i className="sw" style={{ background: '#c9c2ae' }} />NPC</span>
           <span><i className="sw" style={{ background: '#8a93a6' }} />Enemy</span>
           <span><i className="sw" style={{ background: 'var(--accent)' }} />Mini boss</span>
-          <span><i className="sw" style={{ background: 'var(--boss)' }} />Boss</span>
+          <span><i className="sw" style={{ background: 'var(--boss)' }} />Boss / bug</span>
           <span><i className="sw" style={{ background: 'var(--hot)' }} />Hot</span>
           <span><i className="sw" style={{ background: 'var(--ghost)', opacity: .5 }} />Abandoned</span>
+          <span><i className="sw" style={{ background: 'var(--clear)' }} />Merged PR</span>
         </span>
       </div>
       {world && (
         <div className="under">
-          <span>{world.stats.files.toLocaleString()} files · {world.stats.readFiles} read · {world.stats.links} import links · {world.stats.apiCalls} GitHub API calls</span>
+          <span>{world.stats.files.toLocaleString()} files · {world.stats.readFiles} read · {world.stats.links} import links · {world.bugs.length} bugs · {world.gates.length} PR gates · {world.stats.apiCalls} GitHub API calls</span>
           {world.stats.truncated && <span>Very large repo: only part of the file tree was loaded.</span>}
         </div>
       )}

@@ -3,7 +3,7 @@
 const SKIP_DIR = /(^|\/)(node_modules|dist|build|out|vendor|target|bin|obj|coverage|__pycache__|venv|\.venv|\.next|\.nuxt|\.git)(\/|$)/
 const HIDDEN_DIR = /(^|\/)\.(?!github\/)[^/]+\//
 const TEXT_EXT = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'vue', 'svelte', 'py', 'go', 'rs', 'java', 'kt', 'swift', 'rb', 'php', 'cs', 'c', 'h', 'cpp', 'hpp', 'cc', 'scala', 'ex', 'exs', 'hs', 'lua', 'dart', 'sh', 'sql', 'css', 'scss', 'html', 'md', 'mdx', 'json', 'yml', 'yaml', 'toml'])
-export const SOURCE_EXT = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'vue', 'svelte', 'py', 'go'])
+export const SOURCE_EXT = new Set(['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs', 'vue', 'svelte', 'py', 'go', 'rs', 'java', 'rb'])
 const LOCK = /(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|\.min\.(js|css)|\.map|\.d\.ts)$/
 
 export const ext = (p: string) => p.slice(p.lastIndexOf('.') + 1).toLowerCase()
@@ -70,6 +70,15 @@ export function parseImports(path: string, text: string): string[] {
   } else if (e === 'go') {
     for (const block of text.matchAll(/^import\s*\(([\s\S]*?)\)/gm)) for (const m of block[1].matchAll(/"([^"]+)"/g)) out.push(m[1])
     for (const m of text.matchAll(/^import\s+(?:\w+\s+)?"([^"]+)"/gm)) out.push(m[1])
+  } else if (e === 'rs') {
+    // use crate::a::b::{C, D};  ->  crate::a::b      mod x;  ->  mod:x
+    for (const m of text.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+((?:\w+::)*\w+)/gm)) out.push(m[1])
+    for (const m of text.matchAll(/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/gm)) out.push('mod:' + m[1])
+  } else if (e === 'java') {
+    for (const m of text.matchAll(/^import\s+(?:static\s+)?([\w.]+?)(?:\.\*)?\s*;/gm)) out.push(m[1])
+  } else if (e === 'rb') {
+    for (const m of text.matchAll(/^\s*require_relative\s+['"]([^'"]+)['"]/gm)) out.push(m[1].startsWith('.') ? m[1] : './' + m[1])
+    for (const m of text.matchAll(/^\s*require\s+['"]([^'"]+)['"]/gm)) out.push(m[1])
   } else {
     for (const m of text.matchAll(/(?:import|export)\s[^'"`;]*?from\s*['"]([^'"]+)['"]|import\s*\(?\s*['"]([^'"]+)['"]|require\(\s*['"]([^'"]+)['"]\s*\)/g))
       out.push(m[1] || m[2] || m[3])
@@ -106,6 +115,22 @@ export function resolveImport(from: string, spec: string, files: Set<string>, go
     return first(roots.flatMap(r => rel ? [join(r, rel + '.py'), join(r, rel + '/__init__.py')] : [join(r, '__init__.py')]))
   }
 
+  if (e === 'rs') return resolveRust(from, spec, first)
+  if (e === 'java') {
+    // com.acme.billing.Invoice -> any file ending in com/acme/billing/Invoice.java (static imports: drop the member)
+    const byName = javaIndex(files)
+    for (const parts of [spec.split('.'), spec.split('.').slice(0, -1)]) {
+      const tail = parts.join('/') + '.java'
+      const hit = (byName.get(parts.at(-1) + '.java') ?? []).find(f => f === tail || f.endsWith('/' + tail))
+      if (hit) return [hit]
+    }
+    return []
+  }
+  if (e === 'rb') {
+    if (spec.startsWith('.')) return first([join(dirOf(from), spec + (spec.endsWith('.rb') ? '' : '.rb'))])
+    return first(['lib/', 'app/', ''].map(r => r + spec + '.rb'))
+  }
+
   if (e === 'go') {
     if (!goModule || !spec.startsWith(goModule)) return []
     const dir = spec.slice(goModule.length).replace(/^\//, '')
@@ -130,6 +155,39 @@ export function resolveImport(from: string, spec: string, files: Set<string>, go
   return []
 }
 
+// Rust modules: a/b.rs or a/b/mod.rs. `crate::` starts at the crate's src/, `self::`/`super::` at this module.
+function resolveRust(from: string, spec: string, first: (c: string[]) => string[]) {
+  const file = baseName(from)
+  const modDir = /^(mod|lib|main)\.rs$/.test(file) ? dirOf(from) : dirOf(from) + file.slice(0, -3) + '/'
+  if (spec.startsWith('mod:')) { const m = spec.slice(4); return first([modDir + m + '.rs', modDir + m + '/mod.rs']) }
+  const segs = spec.split('::')
+  let base: string
+  if (segs[0] === 'crate') { const i = from.lastIndexOf('src/'); base = i >= 0 ? from.slice(0, i + 4) : ''; segs.shift() }
+  else if (segs[0] === 'self') { base = modDir; segs.shift() }
+  else if (segs[0] === 'super') {
+    base = modDir
+    while (segs[0] === 'super') { base = dirOf(base.slice(0, -1)); segs.shift() }
+  } else return []
+  // the last segments may be items (fn, struct) rather than modules: try the longest module path first
+  for (let n = segs.length; n > 0; n--) {
+    const path = base + segs.slice(0, n).join('/')
+    const hit = first([path + '.rs', path + '/mod.rs'])
+    if (hit.length) return hit
+  }
+  return []
+}
+
+const javaIndexes = new WeakMap<Set<string>, Map<string, string[]>>()
+function javaIndex(files: Set<string>) {
+  let idx = javaIndexes.get(files)
+  if (!idx) {
+    idx = new Map()
+    for (const f of files) if (f.endsWith('.java')) { const b = baseName(f); idx.get(b)?.push(f) ?? idx.set(b, [f]) }
+    javaIndexes.set(files, idx)
+  }
+  return idx
+}
+
 // Top-level names a file defines (functions, classes, exported consts). Used for "which is defined here?" questions.
 export function parseExports(path: string, text: string): string[] {
   const e = ext(path)
@@ -141,6 +199,15 @@ export function parseExports(path: string, text: string): string[] {
   } else if (e === 'go') {
     grab(/^func\s+(?:\([^)]*\)\s*)?([A-Z]\w*)/gm)
     grab(/^type\s+([A-Z]\w*)/gm)
+  } else if (e === 'rs') {
+    grab(/^\s*pub(?:\([^)]*\))?\s+(?:async\s+|const\s+|unsafe\s+)*(?:fn|struct|enum|trait|type|static|const|mod)\s+([A-Za-z_]\w*)/gm)
+    grab(/^(?:async\s+)?fn\s+([A-Za-z_]\w*)/gm)
+  } else if (e === 'java') {
+    grab(/^\s*(?:public\s+|protected\s+)?(?:abstract\s+|final\s+|sealed\s+|static\s+)*(?:class|interface|enum|record)\s+([A-Z]\w*)/gm)
+    grab(/^\s+public\s+(?:static\s+|final\s+|synchronized\s+|abstract\s+)*(?:<[^>]+>\s+)?[\w.<>\[\],?\s]+?\s+([a-z]\w*)\s*\(/gm)
+  } else if (e === 'rb') {
+    grab(/^\s*(?:class|module)\s+([A-Z]\w*)/gm)
+    grab(/^\s*def\s+(?:self\.)?([a-z_]\w*[?!]?)/gm)
   } else {
     grab(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/gm)
     grab(/^(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)/gm)
@@ -155,6 +222,13 @@ export function parseExports(path: string, text: string): string[] {
 export function externalPackages(from: string, specs: string[]) {
   const e = ext(from)
   return [...new Set(specs.filter(s => !s.startsWith('.') && !/^[@~]\//.test(s))
-    .map(s => e === 'go' ? s.split('/').pop()! : s.startsWith('@') ? s.split('/')[1] ?? s : s.split(/[/.]/)[0])
-    .filter(s => s && !['react', 'fs', 'path', 'os', 'sys', 'fmt', 'typing', 'node:fs', 'node:path', 'strings', 'errors'].includes(s)))]
+    .filter(s => !s.startsWith('mod:'))
+    .map(s => {
+      if (e === 'go') return s.split('/').pop()!
+      if (e === 'rs') return s.split('::')[0]
+      if (e === 'java') { const p = s.split('.'); return ['org', 'com', 'io', 'net', 'dev'].includes(p[0]) ? p[1] : p[0] }
+      return s.startsWith('@') ? s.split('/')[1] ?? s : s.split(/[/.]/)[0]
+    })
+    .filter(s => s && !['react', 'fs', 'path', 'os', 'sys', 'fmt', 'typing', 'node:fs', 'node:path', 'strings', 'errors',
+      'std', 'core', 'alloc', 'crate', 'self', 'super', 'java', 'javax', 'json', 'set'].includes(s)))]
 }

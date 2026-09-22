@@ -1,10 +1,11 @@
-// Draws a world.json on a 2D canvas and lets the player walk it.
-import type { World, Building, District, Character } from '../lib/generate.ts'
+// Runs the game (movement, interactions, characters) and draws a world.json on a 2D canvas.
+// An optional 3D view can take over the drawing; the game logic stays here either way.
+import type { World, Building, District, Character, Bug, Gate } from '../lib/generate.ts'
 import { hash } from '../lib/generate.ts'
 import { findPath, gridOf, roadsOf, walkableAt, ROAD_W, type Grid } from './walk.ts'
 
 type Palette = { fill: string; edge: string; roof: string; wall: string }
-const THEME: Record<string, Palette> = {
+export const THEME: Record<string, Palette> = {
   village: { fill: '#2c4533', edge: '#3d5c45', roof: '#b7a37e', wall: '#7a6a4f' },
   village2: { fill: '#46392a', edge: '#5d4c37', roof: '#c9a36a', wall: '#806441' },
   castle: { fill: '#353c4a', edge: '#4a5364', roof: '#9aa3b5', wall: '#5d6679' },
@@ -20,18 +21,33 @@ export const CLS_COLOR: Record<string, string> = {
   NPC: '#c9c2ae', Enemy: '#8a93a6', 'Mini boss': '#f0b429', Boss: '#e5533d', 'Final boss': '#e5533d', cleared: '#5fc48a',
 }
 
+// Anything the player can walk up to and press E on.
+export type Target =
+  | { kind: 'building'; b: Building }
+  | { kind: 'char'; c: Character }
+  | { kind: 'bug'; bug: Bug }
+  | { kind: 'gate'; gate: Gate }
+export const targetKey = (t: Target | null) => !t ? '' : t.kind === 'building' ? t.b.path : t.kind === 'char' ? '@' + t.c.login : t.kind === 'bug' ? 'bug#' + t.bug.number : 'pr#' + t.gate.number
+export const bugKey = (b: Bug) => 'bug#' + b.number
+
 export type Hooks = {
-  inspect: (b: Building | null) => void
-  near: (b: Building | null) => void
+  near: (t: Target | null) => void
+  open: (t: Target | null) => void
   zone: (d: District | null) => void
   fullscreen: () => void
-  nearChar: (c: Character | null) => void
-  talk: (c: Character) => void
 }
-type Npc = { char: Character; login: string; role: string; commits: number; homes: District[]; color: string; x: number; y: number; tx: number; ty: number }
+// The 3D view implements this; loaded on demand so 2D players never download three.js.
+export type View3D = {
+  render: (g: Game, t: number) => void
+  pick: (sx: number, sy: number) => { x: number; y: number; t: Target | null } | null
+  resize: (w: number, h: number) => void
+  dispose: () => void
+}
+export type Npc = { char: Character; login: string; role: string; commits: number; homes: District[]; color: string; x: number; y: number; tx: number; ty: number }
 
 const SPEED = 240
 const MAP_MAX = 170
+const REACH = 46 // how close you need to be to press E
 
 export class Game {
   cv: HTMLCanvasElement
@@ -47,10 +63,8 @@ export class Game {
   route: { x: number; y: number }[] = []
   roads: number[][][] = []
   grid: Grid = { cells: new Uint8Array(0), w: 0, h: 0 }
-  pendingOpen: Building | null = null
-  nearB: Building | null = null
-  nearN: Npc | null = null
-  pendingTalk: Npc | null = null
+  pending: Target | null = null // open this when the walk ends
+  near: Target | null = null
   talking: string | null = null // login of the character you're talking to; they stand still
   quest: Building | null = null
   zoneD: District | null | undefined = undefined
@@ -58,6 +72,7 @@ export class Game {
   keys: Record<string, boolean> = {}
   particles: { x: number; y: number; life: number }[] = []
   npcs: Npc[] = []
+  view3d: View3D | null = null
   W = 0
   H = 0
   map = { x: 0, y: 0, w: 0, h: 0, s: 1 }
@@ -82,9 +97,8 @@ export class Game {
       const k = e.key.toLowerCase()
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault()
       this.keys[k] = true
-      if (k === 'e' && this.nearN) this.hooks.talk(this.nearN.char)
-      else if (k === 'e' && this.nearB) this.hooks.inspect(this.nearB)
-      if (k === 'escape') this.hooks.inspect(null)
+      if (k === 'e' && this.near) this.hooks.open(this.near)
+      if (k === 'escape') this.hooks.open(null)
       if (k === 'f' && !e.metaKey && !e.ctrlKey) this.hooks.fullscreen()
     })
     on('keyup', e => { this.keys[e.key.toLowerCase()] = false })
@@ -98,14 +112,21 @@ export class Game {
   destroy() {
     cancelAnimationFrame(this.raf)
     this.cleanup.forEach(f => f())
+    this.view3d?.dispose()
   }
 
   focus() { this.active = true; this.cv.focus({ preventScroll: true }) }
 
+  setView3D(v: View3D | null) {
+    this.view3d?.dispose()
+    this.view3d = v
+    v?.resize(this.W, this.H)
+  }
+
   respawn() {
     this.player.x = this.world.spawn.x
     this.player.y = this.world.spawn.y
-    this.target = this.pendingOpen = null
+    this.target = this.pending = null
     this.route = []
     this.keys = {}
   }
@@ -118,7 +139,7 @@ export class Game {
     this.roads = roadsOf(w)
     this.grid = gridOf(w, this.roads)
     this.player = { x: w.spawn.x, y: w.spawn.y, dir: 1, step: 0 }
-    this.target = this.pendingOpen = null
+    this.target = this.pending = this.near = null
     this.route = []
     this.particles = []
     this.zoneD = undefined
@@ -140,6 +161,7 @@ export class Game {
     this.W = r.width; this.H = r.height
     this.cv.width = Math.round(r.width * dpr); this.cv.height = Math.round(r.height * dpr)
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    this.view3d?.resize(this.W, this.H)
     if (!this.world) return
     const s = Math.min(MAP_MAX / this.world.width, MAP_MAX / this.world.height, (this.W * 0.3) / this.world.width)
     this.map = { s, w: this.world.width * s, h: this.world.height * s, x: this.W - this.world.width * s - 12, y: this.H - this.world.height * s - 12 }
@@ -148,35 +170,58 @@ export class Game {
   clampX(x: number) { return this.world.width < this.W ? this.world.width / 2 : Math.max(this.W / 2, Math.min(this.world.width - this.W / 2, x)) }
   clampY(y: number) { return this.world.height < this.H ? this.world.height / 2 : Math.max(this.H / 2, Math.min(this.world.height - this.H / 2, y)) }
 
+  // Where to stand to interact with a target.
+  spotFor(t: Target) {
+    if (t.kind === 'building') return { x: t.b.x + t.b.size / 2, y: t.b.y + t.b.size + 18 }
+    if (t.kind === 'char') { const n = this.npcs.find(n => n.char === t.c)!; return { x: n.x, y: n.y + 14 } }
+    const p = t.kind === 'bug' ? t.bug : t.gate
+    return { x: p.x, y: p.y + 10 }
+  }
+
+  // 2D hit test: what's under this world point?
+  hit(wx: number, wy: number): Target | null {
+    const n = this.npcs.find(n => Math.abs(wx - n.x) < 12 && wy > n.y - 24 && wy < n.y + 6)
+    if (n) return { kind: 'char', c: n.char }
+    const bug = this.world.bugs.find(b => Math.abs(wx - b.x) < 13 && Math.abs(wy - b.y) < 11)
+    if (bug) return { kind: 'bug', bug }
+    const gate = this.world.gates.find(g => Math.abs(wx - g.x) < 15 && wy > g.y - 26 && wy < g.y + 4)
+    if (gate) return { kind: 'gate', gate }
+    const b = this.buildings.find(b => wx >= b.x && wx <= b.x + b.size && wy >= b.y - b.size * 0.5 && wy <= b.y + b.size)
+    return b ? { kind: 'building', b } : null
+  }
+
   click(e: PointerEvent) {
     if (!this.world) return
     this.focus()
     const r = this.cv.getBoundingClientRect()
     const sx = e.clientX - r.left, sy = e.clientY - r.top
     const m = this.map
-    if (sx >= m.x && sx <= m.x + m.w && sy >= m.y && sy <= m.y + m.h) {
-      // fast travel: jump to the road just below the district you clicked on the map
+    if (this.mapShown() && sx >= m.x && sx <= m.x + m.w && sy >= m.y && sy <= m.y + m.h) {
+      // fast travel: the district nearest the point you clicked on the map
       const wx = (sx - m.x) / m.s, wy = (sy - m.y) / m.s
       const d = this.world.districts.reduce((a, b) => Math.hypot(b.x - wx, b.y - wy) < Math.hypot(a.x - wx, a.y - wy) ? b : a)
-      this.player.x = d.x; this.player.y = d.y + d.h / 2 - 14
-      this.target = this.pendingOpen = null
-      this.route = []
+      this.travelTo(d.id)
       return
     }
-    const wx = sx - this.W / 2 + this.cam.x, wy = sy - this.H / 2 + this.cam.y
-    const who = this.npcs.find(n => Math.abs(wx - n.x) < 12 && wy > n.y - 24 && wy < n.y + 6)
-    this.pendingTalk = who ?? null
-    if (who) { this.pendingOpen = null; this.walkTo(who.x, who.y + 14); return }
-    const hit = this.buildings.find(b => wx >= b.x && wx <= b.x + b.size && wy >= b.y - b.size * 0.5 && wy <= b.y + b.size)
-    this.pendingOpen = hit ?? null
-    this.walkTo(hit ? hit.x + hit.size / 2 : wx, hit ? hit.y + hit.size + 18 : wy)
+    let wx: number, wy: number, t: Target | null
+    if (this.view3d) {
+      const p = this.view3d.pick(sx, sy)
+      if (!p) return
+      ;({ x: wx, y: wy, t } = p)
+    } else {
+      wx = sx - this.W / 2 + this.cam.x; wy = sy - this.H / 2 + this.cam.y
+      t = this.hit(wx, wy)
+    }
+    this.pending = t
+    const spot = t ? this.spotFor(t) : { x: wx, y: wy }
+    this.walkTo(spot.x, spot.y)
   }
 
   travelTo(id: string) {
     const d = this.world.districts.find(x => x.id === id)
     if (!d) return
     this.player.x = d.x; this.player.y = d.y + d.h / 2 - 14
-    this.target = this.pendingOpen = this.pendingTalk = null
+    this.target = this.pending = null
     this.route = []
   }
 
@@ -192,15 +237,14 @@ export class Game {
   arrive() {
     this.target = null
     this.route = []
-    if (this.pendingOpen) { this.hooks.inspect(this.pendingOpen); this.pendingOpen = null }
-    if (this.pendingTalk) { this.hooks.talk(this.pendingTalk.char); this.pendingTalk = null }
+    if (this.pending) { this.hooks.open(this.pending); this.pending = null }
   }
 
   update(dt: number) {
     const k = this.keys, p = this.player
     let dx = (k.d || k.arrowright ? 1 : 0) - (k.a || k.arrowleft ? 1 : 0)
     let dy = (k.s || k.arrowdown ? 1 : 0) - (k.w || k.arrowup ? 1 : 0)
-    if (dx || dy) { this.target = null; this.pendingOpen = this.pendingTalk = null; this.route = [] }
+    if (dx || dy) { this.target = this.pending = null; this.route = [] }
     else if (this.route.length) {
       const w = this.route[0], tx = w.x - p.x, ty = w.y - p.y, dist = Math.hypot(tx, ty)
       if (dist < 6) { this.route.shift(); if (!this.route.length) this.arrive() }
@@ -220,18 +264,18 @@ export class Game {
     this.cam.x += (this.clampX(p.x) - this.cam.x) * ease
     this.cam.y += (this.clampY(p.y) - this.cam.y) * ease
 
-    let near: Building | null = null, best = 46
+    // whatever is closest within reach gets the E prompt
+    let near: Target | null = null, best = REACH
+    const consider = (t: Target, d: number) => { if (d < best) { best = d; near = t } }
     for (const b of this.buildings) {
       const cx = Math.max(b.x, Math.min(p.x, b.x + b.size)), cy = Math.max(b.y, Math.min(p.y, b.y + b.size))
-      const d = Math.hypot(p.x - cx, p.y - cy)
-      if (d < best) { best = d; near = b }
+      consider({ kind: 'building', b }, Math.hypot(p.x - cx, p.y - cy))
     }
-    // characters and buildings compete for E: whichever is closer wins
-    let nearN: Npc | null = null, bestN = 44
-    for (const n of this.npcs) { const d = Math.hypot(p.x - n.x, p.y - n.y); if (d < bestN) { bestN = d; nearN = n } }
-    if (nearN && near) { if (bestN < best) near = null; else nearN = null }
-    if (near !== this.nearB) { this.nearB = near; this.hooks.near(near) }
-    if (nearN !== this.nearN) { this.nearN = nearN; this.hooks.nearChar(nearN?.char ?? null) }
+    for (const n of this.npcs) consider({ kind: 'char', c: n.char }, Math.hypot(p.x - n.x, p.y - n.y) - 2)
+    for (const bug of this.world.bugs) consider({ kind: 'bug', bug }, Math.hypot(p.x - bug.x, p.y - bug.y) - 4)
+    for (const gate of this.world.gates) consider({ kind: 'gate', gate }, Math.hypot(p.x - gate.x, p.y - gate.y) - 4)
+    if (targetKey(near) !== targetKey(this.near)) { this.near = near; this.hooks.near(near) }
+
     const zone = this.world.districts.find(d => Math.abs(p.x - d.x) < d.w / 2 && Math.abs(p.y - d.y) < d.h / 2) ?? null
     if (zone !== this.zoneD) { this.zoneD = zone; this.hooks.zone(zone) }
 
@@ -244,7 +288,7 @@ export class Game {
         n.ty = home.y + home.h / 2 - 12 - Math.random() * 10
       } else { n.x += (n.tx - n.x) / d * 45 * dt; n.y += (n.ty - n.y) / d * 45 * dt }
     }
-    if (!this.reduce) {
+    if (!this.reduce && !this.view3d) {
       for (const b of this.buildings) if (b.hot && Math.random() < dt * 14)
         this.particles.push({ x: b.x + Math.random() * b.size, y: b.y - b.size * 0.5 + Math.random() * b.size * 0.5, life: 1 })
       for (const q of this.particles) { q.y -= 30 * dt; q.x += Math.sin(q.y / 8) * 0.3; q.life -= dt * 1.1 }
@@ -255,11 +299,21 @@ export class Game {
   loop(now: number) {
     const dt = Math.min(0.05, (now - (this.last || now)) / 1000)
     this.last = now
-    if (this.world && this.W) { this.update(dt); this.draw(now / 1000) }
+    if (this.world && this.W) {
+      this.update(dt)
+      if (this.view3d) {
+        // 3D draws the world; this canvas stays on top as a transparent layer for the minimap and clicks
+        this.ctx.clearRect(0, 0, this.W, this.H)
+        this.view3d.render(this, now / 1000)
+        this.drawMap()
+      } else this.draw(now / 1000)
+    }
     this.raf = requestAnimationFrame(this.loop)
   }
 
-  // ---------- drawing ----------
+  isNear(t: Target) { return targetKey(this.near) === targetKey(t) }
+
+  // ---------- 2D drawing ----------
   draw(t: number) {
     const { ctx, W, H, world } = this
     ctx.fillStyle = '#18202b'
@@ -280,6 +334,8 @@ export class Game {
     const ents: { y: number; f: () => void }[] = [
       ...this.buildings.map(b => ({ y: b.y + b.size, f: () => this.drawBuilding(b, t) })),
       ...this.npcs.map(n => ({ y: n.y, f: () => this.drawNpc(n) })),
+      ...world.bugs.map(b => ({ y: b.y, f: () => this.drawBug(b, t) })),
+      ...world.gates.map(g => ({ y: g.y, f: () => this.drawGate(g) })),
       { y: this.player.y, f: () => this.drawPlayer() },
     ]
     ents.sort((a, b) => a.y - b.y).forEach(e => e.f())
@@ -319,13 +375,12 @@ export class Game {
   }
 
   drawRoads() {
-    const { ctx, world } = this
+    const { ctx } = this
     const path = (pts: number[][]) => { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (const q of pts.slice(1)) ctx.lineTo(q[0], q[1]) }
-    const routes = this.roads
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'
-    for (const r of routes) { ctx.strokeStyle = '#2b3443'; ctx.lineWidth = ROAD_W; path(r); ctx.stroke() }
+    for (const r of this.roads) { ctx.strokeStyle = '#2b3443'; ctx.lineWidth = ROAD_W; path(r); ctx.stroke() }
     ctx.strokeStyle = '#3a4455'; ctx.lineWidth = 2; ctx.setLineDash([10, 12])
-    for (const r of routes) { path(r); ctx.stroke() }
+    for (const r of this.roads) { path(r); ctx.stroke() }
     ctx.setLineDash([])
   }
 
@@ -383,13 +438,62 @@ export class Game {
     } else if (done) {
       ctx.fillStyle = CLS_COLOR.cleared; ctx.beginPath(); ctx.arc(x + s - 6, y - H2 + 6, 5, 0, 7); ctx.fill()
     }
-    if (b === this.nearB) { ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2; ctx.strokeRect(x - 3, y - H2 - 3, s + 6, s + 6) }
+    if (this.isNear({ kind: 'building', b })) { ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2; ctx.strokeRect(x - 3, y - H2 - 3, s + 6, s + 6) }
     ctx.restore()
     ctx.font = '500 11px "IBM Plex Mono", monospace'; ctx.textAlign = 'center'
     ctx.fillStyle = b.ghost ? '#7c8494' : '#d8d2c2'
     const fit = Math.floor((s + 34) / 6.6) // chars that fit in the building's slot (11px mono)
     const label = b.label.length <= fit ? b.label : b.label.includes('/') ? '…' + b.label.slice(-(fit - 1)) : b.label.slice(0, fit - 1) + '…'
     ctx.fillText(label, x + s / 2, y + s + 16)
+  }
+
+  drawBug(b: Bug, t: number) {
+    const { ctx } = this
+    const squashed = this.cleared.has(bugKey(b))
+    ctx.save()
+    ctx.translate(b.x, b.y)
+    if (squashed) {
+      ctx.fillStyle = 'rgba(95,196,138,.55)'
+      ctx.beginPath(); ctx.ellipse(0, 0, 11, 5, 0, 0, 7); ctx.fill()
+      ctx.restore()
+      return
+    }
+    const wig = this.reduce ? 0 : Math.sin(t * 9 + b.number) * 1.5
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(0, 3, 10, 4, 0, 0, 7); ctx.fill()
+    ctx.strokeStyle = '#2a0f0c'; ctx.lineWidth = 1.5
+    for (const side of [-1, 1]) for (const k of [-4, 0, 4]) {
+      ctx.beginPath(); ctx.moveTo(side * 5, k - 2); ctx.lineTo(side * 11, k - 4 + (side * k > 0 ? wig : -wig)); ctx.stroke()
+    }
+    ctx.fillStyle = '#e5533d'; ctx.beginPath(); ctx.ellipse(0, -2, 7, 9, 0, 0, 7); ctx.fill()
+    ctx.fillStyle = '#2a0f0c'; ctx.fillRect(-0.75, -10, 1.5, 17)
+    ctx.beginPath(); ctx.arc(0, -11, 3.5, 0, 7); ctx.fill()
+    if (this.isNear({ kind: 'bug', bug: b })) {
+      ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(0, 3, 14, 6, 0, 0, 7); ctx.stroke()
+    }
+    ctx.restore()
+    ctx.font = '700 10px "IBM Plex Mono", monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#ff9c8f'
+    ctx.fillText(`#${b.number}`, b.x, b.y - 16)
+  }
+
+  drawGate(g: Gate) {
+    const { ctx } = this
+    const open = g.state === 'merged'
+    const col = open ? '#5fc48a' : '#e5533d'
+    ctx.save()
+    ctx.translate(g.x, g.y)
+    ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(-13, 1, 28, 4)
+    ctx.fillStyle = '#6b5a45'; ctx.fillRect(-13, -22, 4, 23); ctx.fillRect(9, -22, 4, 23)
+    ctx.fillStyle = col
+    if (open) { ctx.fillRect(-12, -30, 3, 10) } // bar raised
+    else {
+      ctx.fillRect(-11, -15, 22, 4)
+      ctx.fillStyle = '#f0b429'; ctx.fillRect(-3, -12, 6, 5); ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.arc(0, -12, 2.5, Math.PI, 0); ctx.stroke()
+    }
+    if (this.isNear({ kind: 'gate', gate: g })) { ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2; ctx.strokeRect(-17, -27, 34, 32) }
+    ctx.restore()
+    ctx.font = '700 10px "IBM Plex Mono", monospace'; ctx.textAlign = 'center'; ctx.fillStyle = col
+    ctx.fillText(`#${g.number}`, g.x, g.y - 32)
   }
 
   drawPlayer() {
@@ -412,7 +516,7 @@ export class Game {
     ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.beginPath(); ctx.ellipse(n.x, n.y + 2, 7, 3, 0, 0, 7); ctx.fill()
     ctx.fillStyle = n.color; ctx.fillRect(n.x - 5, n.y - 12, 10, 11); ctx.fillRect(n.x - 4, n.y - 20, 8, 7)
     ctx.textAlign = 'center'
-    if (n === this.nearN) {
+    if (this.isNear({ kind: 'char', c: n.char })) {
       ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2
       ctx.beginPath(); ctx.ellipse(n.x, n.y + 2, 11, 5, 0, 0, 7); ctx.stroke()
     }
@@ -424,9 +528,11 @@ export class Game {
     }
   }
 
+  mapShown() { return this.world.width > this.W || this.world.height > this.H || !!this.view3d }
+
   drawMap() {
     const { ctx, map: m, world } = this
-    if (world.width <= this.W && world.height <= this.H) return
+    if (!this.mapShown()) return
     ctx.fillStyle = '#0f141c'; ctx.fillRect(m.x - 4, m.y - 4, m.w + 8, m.h + 8)
     ctx.strokeStyle = '#2b3443'; ctx.lineWidth = Math.max(1.5, ROAD_W * m.s)
     for (const r of this.roads) { ctx.beginPath(); r.forEach(([x, y], i) => i ? ctx.lineTo(m.x + x * m.s, m.y + y * m.s) : ctx.moveTo(m.x + x * m.s, m.y + y * m.s)); ctx.stroke() }
@@ -439,8 +545,10 @@ export class Game {
       ctx.fillStyle = this.cleared.has(b.path) ? CLS_COLOR.cleared : CLS_COLOR.Boss
       ctx.fillRect(m.x + b.x * m.s - 1, m.y + b.y * m.s - 1, 3, 3)
     }
-    ctx.strokeStyle = 'rgba(235,230,216,.5)'
-    ctx.strokeRect(m.x + (this.cam.x - this.W / 2) * m.s, m.y + (this.cam.y - this.H / 2) * m.s, this.W * m.s, this.H * m.s)
+    if (!this.view3d) {
+      ctx.strokeStyle = 'rgba(235,230,216,.5)'
+      ctx.strokeRect(m.x + (this.cam.x - this.W / 2) * m.s, m.y + (this.cam.y - this.H / 2) * m.s, this.W * m.s, this.H * m.s)
+    }
     ctx.fillStyle = '#f0b429'; ctx.fillRect(m.x + this.player.x * m.s - 2, m.y + this.player.y * m.s - 2, 5, 5)
   }
 }

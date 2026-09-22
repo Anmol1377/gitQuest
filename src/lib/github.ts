@@ -1,6 +1,6 @@
-// GitHub access without a key. Everything here fits the 60 req/hr unauthenticated limit:
-// ~4 API calls + one per district. File contents come from raw.githubusercontent.com,
-// which doesn't count against the API limit.
+// GitHub access without a key. The file list and contents come from jsDelivr's mirror (no limit);
+// the API calls here (history, contributors, issues, PRs) are optional extras, ~20 per world,
+// which fits the 60 req/hr unauthenticated limit.
 
 const API = 'https://api.github.com'
 
@@ -66,6 +66,34 @@ export class GitHub {
     const { data } = await this.api<any[]>(`/repos/${owner}/${repo}/contributors?per_page=12`).catch(() => ({ data: [] as any[] }))
     return data.filter(c => c.type !== 'Bot' && !String(c.login).endsWith('[bot]'))
       .map(c => ({ login: c.login as string, commits: c.contributions as number }))
+  }
+
+  // Open issues, bug-labelled first (they become bug monsters). 1 call.
+  async issues(owner: string, repo: string) {
+    const { data } = await this.api<any[]>(`/repos/${owner}/${repo}/issues?state=open&per_page=50&sort=comments&direction=desc`)
+    const all = data.filter(i => !i.pull_request).map(i => ({
+      number: i.number as number, title: i.title as string, body: String(i.body ?? '').slice(0, 2000),
+      labels: (i.labels ?? []).map((l: any) => (typeof l === 'string' ? l : l.name) as string),
+      createdAt: i.created_at as string, comments: i.comments as number, user: (i.user?.login ?? '') as string,
+    }))
+    const isBug = (i: { labels: string[] }) => i.labels.some(l => /bug|defect|crash|regression|broken/i.test(l))
+    const bugs = all.filter(isBug)
+    return [...bugs, ...all.filter(i => !isBug(i)).slice(0, Math.max(0, 8 - bugs.length))].slice(0, 12)
+  }
+
+  // Open PRs and ones merged in the last 90 days (they become gates). 1 call.
+  async pulls(owner: string, repo: string) {
+    const { data } = await this.api<any[]>(`/repos/${owner}/${repo}/pulls?state=all&sort=updated&direction=desc&per_page=40`)
+    const recent = Date.now() - 90 * 86_400_000
+    return data
+      .filter(p => p.state === 'open' || (p.merged_at && Date.parse(p.merged_at) > recent))
+      .map(p => ({
+        number: p.number as number, title: p.title as string, branch: (p.head?.ref ?? '') as string,
+        state: (p.state === 'open' ? 'open' : 'merged') as 'open' | 'merged',
+        createdAt: p.created_at as string, mergedAt: (p.merged_at ?? null) as string | null, user: (p.user?.login ?? '') as string,
+      }))
+      .sort((a, b) => (a.state === b.state ? 0 : a.state === 'open' ? -1 : 1))
+      .slice(0, 12)
   }
 
   // One call per folder: commit count, last touched, and who works there.
