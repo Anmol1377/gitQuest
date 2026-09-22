@@ -35,6 +35,14 @@ Importance score: `imported-by × 3 + √lines / 4 + district activity`. Tests, 
 
 Big repos stay walkable: dominant folders like `src/` and monorepo folders like `packages/` are split into their children, each district shows its top 9 files, and the rest become one hamlet.
 
+## How you play
+
+- Walk with **WASD** or the arrow keys, or click where you want to go. Press **E** to inspect a building. Click the minimap to fast-travel
+- **Quest:** the red arrow points to the Final Boss, the most imported file in the repo
+- **Fights** are questions built from the real code: "Which file imports `utils.js`?", "Which package does it use?". Enemies take 1 round, mini bosses 2, bosses 3, and the Final Boss 4
+- You have **5 hearts**. A wrong answer costs one, and losing all five sends you back to README Village. Clearing a building restores a heart
+- A building's stats stay hidden until you defeat it. Progress is saved per repo in your browser
+
 ## No API key needed
 
 A world costs **zero** GitHub API calls:

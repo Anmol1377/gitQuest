@@ -42,6 +42,7 @@ export class Game {
   target: { x: number; y: number } | null = null
   pendingOpen: Building | null = null
   nearB: Building | null = null
+  quest: Building | null = null
   zoneD: District | null | undefined = undefined
   active = false
   keys: Record<string, boolean> = {}
@@ -89,6 +90,13 @@ export class Game {
 
   focus() { this.active = true; this.cv.focus({ preventScroll: true }) }
 
+  respawn() {
+    this.player.x = this.world.spawn.x
+    this.player.y = this.world.spawn.y
+    this.target = this.pendingOpen = null
+    this.keys = {}
+  }
+
   setWorld(w: World) {
     this.world = w
     this.districtOf.clear()
@@ -104,7 +112,7 @@ export class Game {
       const d = homes[0] ?? w.districts[0]
       const h = hash(c.login)
       return { ...c, homes: homes.length ? homes : [d], color: `hsl(${h % 360} 70% 72%)`,
-        x: d.x - d.w / 2 + 30 + (h % Math.max(1, d.w - 60)), y: d.y + d.h / 2 - 16, tx: d.x, ty: d.y + d.h / 2 - 16 }
+        x: d.x - d.w / 2 + 30 + (h % Math.max(1, d.w - 60)), y: d.y + d.h / 2 + 30, tx: d.x, ty: d.y + d.h / 2 + 30 }
     })
     this.resize()
     this.cam.x = this.clampX(this.player.x)
@@ -194,7 +202,7 @@ export class Game {
       if (d < 4) {
         const home = n.homes[Math.floor(Math.random() * n.homes.length)]
         n.tx = home.x + (Math.random() - 0.5) * (home.w - 60)
-        n.ty = home.y + home.h / 2 - 10 - Math.random() * 20
+        n.ty = home.y + home.h / 2 + 24 + Math.random() * 16
       } else { n.x += (n.tx - n.x) / d * 45 * dt; n.y += (n.ty - n.y) / d * 45 * dt }
     }
     if (!this.reduce) {
@@ -246,7 +254,29 @@ export class Game {
       ctx.beginPath(); ctx.arc(this.target.x, this.target.y, 6 + Math.sin(t * 6) * 2, 0, 7); ctx.stroke()
     }
     ctx.restore()
+    this.drawQuestArrow(t)
     this.drawMap()
+  }
+
+  // A pointer orbiting the player toward the quest target, hidden once it's on screen.
+  drawQuestArrow(t: number) {
+    const q = this.quest
+    if (!q) return
+    const { ctx, W, H } = this
+    const qx = q.x + q.size / 2, qy = q.y
+    const sx = qx - this.cam.x + W / 2, sy = qy - this.cam.y + H / 2
+    if (sx > 0 && sx < W && sy > 0 && sy < H) return
+    const px = this.player.x - this.cam.x + W / 2, py = this.player.y - 12 - this.cam.y + H / 2
+    const a = Math.atan2(qy - this.player.y, qx - this.player.x)
+    const r = 46 + (this.reduce ? 0 : Math.sin(t * 5) * 3)
+    ctx.save()
+    ctx.translate(px + Math.cos(a) * r, py + Math.sin(a) * r); ctx.rotate(a)
+    ctx.fillStyle = '#e5533d'
+    ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9); ctx.fill()
+    ctx.restore()
+    const dist = Math.round(Math.hypot(qx - this.player.x, qy - this.player.y) / 10)
+    ctx.font = '700 12px "Pixelify Sans", monospace'; ctx.fillStyle = '#e5533d'; ctx.textAlign = 'center'
+    ctx.fillText(`FINAL BOSS ${dist}m`, px + Math.cos(a) * (r + 30), py + Math.sin(a) * (r + 24) + 4)
   }
 
   drawRoads() {
@@ -293,7 +323,8 @@ export class Game {
     ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(x + 4, y + s - 4, s, 8)
     ctx.fillStyle = b.ghost ? '#4b5160' : th.wall; ctx.fillRect(x, y + s - H2, s, H2)
     ctx.fillStyle = b.ghost ? '#8a909c' : th.roof; ctx.fillRect(x, y - H2, s, s)
-    ctx.fillStyle = 'rgba(255,255,255,.12)'; ctx.fillRect(x, y - H2, s, 3)
+    ctx.fillStyle = b.cls === 'NPC' || b.ghost ? 'rgba(255,255,255,.12)' : done ? CLS_COLOR.cleared : CLS_COLOR[b.cls]
+    ctx.fillRect(x, y - H2, s, b.cls === 'NPC' ? 3 : 5)
     if (b.more) { // hamlet: a cluster of small roofs
       ctx.fillStyle = 'rgba(0,0,0,.18)'
       ctx.fillRect(x + s / 2 - 1, y - H2, 2, s); ctx.fillRect(x, y - H2 + s / 2 - 1, s, 2)
@@ -324,8 +355,8 @@ export class Game {
     ctx.restore()
     ctx.font = '500 11px "IBM Plex Mono", monospace'; ctx.textAlign = 'center'
     ctx.fillStyle = b.ghost ? '#7c8494' : '#d8d2c2'
-    const fit = Math.floor((s + 30) / 6.8) // chars that fit in the building's slot (11px mono)
-    const label = b.name.length > fit ? b.name.slice(0, fit - 1) + '…' : b.name
+    const fit = Math.floor((s + 34) / 6.6) // chars that fit in the building's slot (11px mono)
+    const label = b.label.length <= fit ? b.label : b.label.includes('/') ? '…' + b.label.slice(-(fit - 1)) : b.label.slice(0, fit - 1) + '…'
     ctx.fillText(label, x + s / 2, y + s + 16)
   }
 
@@ -337,14 +368,21 @@ export class Game {
     ctx.fillStyle = '#141a24'; ctx.fillRect(x + (this.player.dir > 0 ? 1 : -4), y - 24 + bob, 3, 3)
   }
 
+  closestNpc() {
+    let best: Npc | null = null, bd = Infinity
+    for (const n of this.npcs) { const d = Math.hypot(n.x - this.player.x, n.y - this.player.y); if (d < bd) { bd = d; best = n } }
+    return best
+  }
+
   drawNpc(n: Npc) {
     const { ctx } = this
-    const close = Math.hypot(n.x - this.player.x, n.y - this.player.y) < 70
+    const d = Math.hypot(n.x - this.player.x, n.y - this.player.y)
     ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.beginPath(); ctx.ellipse(n.x, n.y + 2, 7, 3, 0, 0, 7); ctx.fill()
     ctx.fillStyle = n.color; ctx.fillRect(n.x - 5, n.y - 12, 10, 11); ctx.fillRect(n.x - 4, n.y - 20, 8, 7)
     ctx.textAlign = 'center'
+    if (d > 110 || n !== this.closestNpc()) return
     ctx.font = '700 12px "Pixelify Sans", monospace'; ctx.fillStyle = n.color; ctx.fillText(n.login, n.x, n.y - 26)
-    if (close) {
+    if (d < 70) {
       ctx.font = '11px "IBM Plex Mono", monospace'; ctx.fillStyle = '#ebe6d8'
       ctx.fillText(`${n.role} · ${n.commits} commits`, n.x, n.y - 40)
     }

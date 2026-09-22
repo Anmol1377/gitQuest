@@ -58,8 +58,14 @@ test('the most imported file becomes the final boss', () => {
   assert.ok(w.districts.find(d => d.id === 'src/db/')!.ghost)
   // every district is reachable by road from the village
   assert.equal(w.roads.length, w.districts.length - 1)
-  // quizzes point at a real option
-  for (const b of all) if (b.quiz) assert.ok(b.quiz.answer >= 0 && b.quiz.answer < b.quiz.options.length && b.quiz.options.every(Boolean), b.path)
+  // bosses take more rounds; every question has distinct options and a real answer
+  assert.ok(stripe.quizzes!.length >= 3)
+  assert.equal(new Set(stripe.quizzes!.map(q => q.q)).size, stripe.quizzes!.length)
+  for (const b of all) for (const q of b.quizzes ?? [])
+    assert.ok(q.answer >= 0 && q.answer < q.options.length && q.options.every(Boolean) && new Set(q.options).size === 3, `${b.path}: ${q.q}`)
+  // buildings never overlap inside a district
+  for (const d of w.districts) for (const a of d.buildings) for (const b of d.buildings)
+    if (a !== b) assert.ok(a.x + a.size <= b.x || b.x + b.size <= a.x || a.y + a.size <= b.y - b.size / 2 || b.y + b.size <= a.y - a.size / 2, `${a.path} overlaps ${b.path}`)
 })
 
 test('same repo, same world', () => {

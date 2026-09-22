@@ -35,6 +35,11 @@ h1 span { color: var(--accent) }
 canvas { display: block; width: 100%; height: min(72vh, 680px); min-height: 440px; cursor: pointer; touch-action: none }
 .hud { position: absolute; top: 12px; left: 12px; display: flex; flex-direction: column; gap: 2px; pointer-events: none; font: 13px var(--mono); background: rgba(15,20,28,.85); border: 1px solid var(--line); padding: 8px 12px; border-radius: 6px; max-width: calc(100% - 24px) }
 .hud b { font: 700 15px var(--display); color: var(--accent); letter-spacing: .04em }
+.hearts { color: var(--boss); letter-spacing: .1em }
+.hearts span { color: var(--line) }
+.quest { color: var(--boss); max-width: 34ch }
+.quest.done { color: var(--clear) }
+.toast { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); font: 700 15px var(--display); letter-spacing: .03em; background: rgba(15,20,28,.94); border: 1px solid var(--accent); color: var(--text); padding: 10px 16px; border-radius: 6px; max-width: calc(100% - 24px); text-align: center; z-index: 2 }
 .hint { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font: 700 14px var(--display); letter-spacing: .05em; background: rgba(15,20,28,.9); border: 1px solid var(--accent); color: var(--accent); padding: 6px 14px; border-radius: 6px; pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis }
 
 .loading { position: absolute; inset: 0; background: #0f141c; display: flex; flex-direction: column; justify-content: center; gap: 18px; padding: 0 12%; font: 14px var(--mono) }

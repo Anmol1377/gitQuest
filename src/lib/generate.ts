@@ -16,10 +16,10 @@ export type Facts = {
 export type Cls = 'NPC' | 'Enemy' | 'Mini boss' | 'Boss' | 'Final boss'
 export type Quiz = { q: string; options: string[]; answer: number; source: string }
 export type Building = {
-  path: string; name: string; title: string; cls: Cls; hp: number
+  path: string; name: string; label: string; title: string; cls: Cls; hp: number
   deps: number; lines: number; imports: string[]; abilities: string[]
   hot: boolean; ghost: boolean; x: number; y: number; size: number
-  talk?: string; quiz?: Quiz; more?: number
+  talk?: string; quizzes?: Quiz[]; more?: number
 }
 export type District = {
   id: string; label: string; path: string; theme: string
@@ -29,7 +29,7 @@ export type District = {
 }
 export type Character = { login: string; role: string; commits: number; homes: string[] }
 export type World = {
-  version: 1
+  version: 2
   repo: RepoInfo
   districts: District[]
   roads: [string, string][]
@@ -79,8 +79,9 @@ const pick = <T,>(arr: T[], seed: string) => arr[hash(seed) % arr.length]
 const edgeKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`)
 const SHOWN = 9 // buildings per district; the rest become one hamlet
 const PER_ROW = 5
-const ROW_H = 112
 const GAP = 36
+const SIZE: Record<Cls, number> = { NPC: 32, Enemy: 42, 'Mini boss': 54, Boss: 66, 'Final boss': 84 }
+const ROUNDS: Record<Cls, number> = { NPC: 0, Enemy: 1, 'Mini boss': 2, Boss: 3, 'Final boss': 4 }
 const ROAD = 150
 
 export function generate(f: Facts): World {
@@ -96,6 +97,7 @@ export function generate(f: Facts): World {
   const imports = new Map<string, string[]>()
   const externals = new Map<string, string[]>()
   const dependents = new Map<string, number>()
+  const importers = new Map<string, string[]>()
   let links = 0
   for (const [p, text] of Object.entries(f.contents)) {
     if (!SOURCE_EXT.has(ext(p)) || !fileSet.has(p)) continue
@@ -103,7 +105,10 @@ export function generate(f: Facts): World {
     const targets = [...new Set(specs.flatMap(s => resolveImport(p, s, fileSet, goModule)))].filter(t => t !== p)
     imports.set(p, targets)
     externals.set(p, externalPackages(p, specs))
-    for (const t of targets) dependents.set(t, (dependents.get(t) ?? 0) + 1)
+    for (const t of targets) {
+      dependents.set(t, (dependents.get(t) ?? 0) + 1)
+      importers.get(t)?.push(p) ?? importers.set(t, [p])
+    }
     links += targets.length
   }
 
@@ -142,29 +147,52 @@ export function generate(f: Facts): World {
     const int_ = (imports.get(p) ?? []).map(t => `${titleCase(baseName(t).replace(/\.[^.]+$/, ''))} Summon`)
     return [...new Set([...ext_, ...int_])].slice(0, 3)
   }
-  const quizOf = (p: string): Quiz => {
+  const allPackages = [...new Set([...externals.values()].flat())]
+  const choice = (q: string, right: string, pool: string[], h: number, source: string): Quiz | null => {
+    const decoys = [...new Set(pool)].filter(x => x !== right)
+    if (decoys.length < 2) return null
+    const d1 = decoys[h % decoys.length]
+    const d2 = decoys[(h % decoys.length + 1 + (h >>> 4) % (decoys.length - 1)) % decoys.length]
+    const options = [d1, d2]
+    const answer = h % 3
+    options.splice(answer, 0, right)
+    return { q, options, answer, source }
+  }
+  const numeric = (q: string, n: number, h: number, source: string): Quiz => {
+    const opts = [...new Set([n, n + 2 + (h % 4), Math.max(0, n - 1 - (h % 3))])]
+    while (opts.length < 3) opts.push(n + 6 + opts.length)
+    opts.sort((a, b) => a - b)
+    return { q, options: opts.map(String), answer: opts.indexOf(n), source }
+  }
+  // Several different questions per fighter, all answerable from the code, none from the panel.
+  const quizzesOf = (p: string, count: number): Quiz[] => {
     const h = hash(p)
-    const name = baseName(p)
+    const name = /^(index|main|mod|__init__|init|app)\./i.test(baseName(p)) ? shortName(p) : baseName(p)
     const own = imports.get(p) ?? []
+    const users = importers.get(p) ?? []
+    const pkgs = externals.get(p) ?? []
     const deps = dependents.get(p) ?? 0
-    const decoys = ranked.filter(x => x !== p && !own.includes(x) && SOURCE_EXT.has(ext(x)))
-    if (own.length && decoys.length >= 2 && (h % 2 === 0 || deps === 0)) {
-      const d1 = decoys[h % decoys.length]
-      const d2 = decoys[(h % decoys.length + 1 + (h >>> 4) % (decoys.length - 1)) % decoys.length]
-      const opts = [d1, d2].map(shortName)
-      const answer = h % 3
-      opts.splice(answer, 0, shortName(own[h % own.length]))
-      return { q: `Which of these files does ${name} import?`, options: opts, answer, source: 'Built from the import graph' }
+    const src = ranked.filter(x => x !== p && SOURCE_EXT.has(ext(x)))
+    const graph = 'Built from the import graph'
+    const makers: (() => Quiz | null)[] = [
+      () => own.length ? choice(`Which of these files does ${name} import?`, shortName(own[h % own.length]), src.filter(x => !own.includes(x)).map(shortName), h, graph) : null,
+      () => users.length ? choice(`Which of these files imports ${name}?`, shortName(users[h % users.length]), src.filter(x => !users.includes(x)).map(shortName), h >>> 3, graph) : null,
+      () => pkgs.length ? choice(`Which package does ${name} use?`, pkgs[h % pkgs.length], allPackages.filter(x => !pkgs.includes(x)), h >>> 5, 'Built from its imports') : null,
+      () => deps ? numeric(`How many files in this repo import ${name}?`, deps, h, graph) : null,
+      () => own.length ? numeric(`How many files from this repo does ${name} import?`, own.length, h >>> 2, graph) : null,
+      () => {
+        const l = lines(p)
+        return { q: `Roughly how long is ${name}?`, options: ['Under 100 lines', '100 to 400 lines', 'Over 400 lines'],
+          answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : 'Counted from the file' }
+      },
+    ]
+    const start = h % makers.length
+    const out: Quiz[] = []
+    for (let i = 0; i < makers.length && out.length < count; i++) {
+      const q = makers[(start + i) % makers.length]()
+      if (q) out.push(q)
     }
-    if (deps > 0) {
-      const opts = [...new Set([deps, deps + 2 + (h % 4), Math.max(0, deps - 1 - (h % 3))])]
-      while (opts.length < 3) opts.push(deps + 6 + opts.length)
-      opts.sort((a, b) => a - b)
-      return { q: `How many files in this repo import ${name}?`, options: opts.map(String), answer: opts.indexOf(deps), source: 'Built from the import graph' }
-    }
-    const l = lines(p)
-    return { q: `Roughly how long is ${name}?`, options: ['Under 100 lines', '100 to 400 lines', 'Over 400 lines'],
-      answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : 'Counted from the file' }
+    return out
   }
 
   // districts and buildings
@@ -179,22 +207,24 @@ export function generate(f: Facts): World {
     const shown = sorted.length > SHOWN + 1 ? sorted.slice(0, SHOWN) : sorted
     const rest = sorted.slice(shown.length)
 
+    const names = shown.map(baseName)
     const buildings: Building[] = shown.map((p, i) => {
       const c = cls.get(p)!
       const s = score.get(p)!
+      const dup = names.filter(x => x === baseName(p)).length > 1
       const b: Building = {
-        path: p, name: baseName(p), title: titleOf(p, c), cls: c, hp: Math.max(100, Math.round(s * 100)),
+        path: p, name: baseName(p), label: dup ? shortName(p) : baseName(p), title: titleOf(p, c), cls: c, hp: Math.max(100, Math.round(s * 100)),
         deps: dependents.get(p) ?? 0, lines: lines(p), imports: imports.get(p) ?? [], abilities: c === 'NPC' ? [] : abilitiesOf(p),
-        hot: hot && i < 2 && c !== 'NPC', ghost, x: 0, y: 0, size: Math.round(28 + 42 * Math.sqrt(Math.min(1, s / maxScore))),
+        hot: hot && i < 2 && c !== 'NPC', ghost, x: 0, y: 0, size: SIZE[c] + Math.round(4 * Math.min(1, s / maxScore)),
       }
       if (c === 'NPC') b.talk = talkOf(p, b)
-      else b.quiz = quizOf(p)
+      else b.quizzes = quizzesOf(p, ROUNDS[c])
       return b
     })
     if (rest.length) buildings.push({
-      path: g.path + '…', name: `+${rest.length} more files`, title: 'The Hamlet', cls: 'NPC', hp: 0,
+      path: g.path + '…', name: `+${rest.length} more files`, label: `+${rest.length} more`, title: 'The Hamlet', cls: 'NPC', hp: 0,
       deps: rest.reduce((t, p) => t + (dependents.get(p) ?? 0), 0), lines: rest.reduce((t, p) => t + lines(p), 0),
-      imports: [], abilities: [], hot: false, ghost, x: 0, y: 0, size: 34, more: rest.length,
+      imports: [], abilities: [], hot: false, ghost, x: 0, y: 0, size: 40, more: rest.length,
       talk: `${rest.length} smaller files live here, like ${rest.slice(0, 3).map(baseName).join(', ')}.`,
     })
 
@@ -202,13 +232,17 @@ export function generate(f: Facts): World {
     const rows: Building[][] = []
     for (let i = 0; i < buildings.length; i += PER_ROW) rows.push(buildings.slice(i, i + PER_ROW))
     const rowW = (r: Building[]) => r.reduce((t, b) => t + b.size, 0) + GAP * (r.length - 1)
+    // each row is tall enough for its biggest roof (1.5x size) plus the name label
+    const roof = (r: Building[]) => Math.max(...r.map(b => b.size)) * 1.5
     const w = Math.max(320, ...rows.map(r => rowW(r) + 80))
-    const h = 82 + rows.length * ROW_H
-    rows.forEach((r, ri) => {
+    const h = 62 + rows.reduce((t, r) => t + roof(r) + 34, 0)
+    let top = -h / 2 + 58
+    for (const r of rows) {
       let x = -rowW(r) / 2
-      const base = -h / 2 + 72 + (ri + 1) * ROW_H - 28
+      const base = top + roof(r)
       for (const b of r) { b.x = x; b.y = base - b.size; x += b.size + GAP }
-    })
+      top = base + 34
+    }
     return { id: g.id, label, path: g.path || (g.id === 'root' ? '/' : 'everything else'), theme, x: 0, y: 0, w, h,
       fileCount: g.files.length, commits: a?.commits ?? null, lastDays: a?.lastDays ?? null, hot, ghost, buildings }
   })
@@ -291,7 +325,7 @@ export function generate(f: Facts): World {
   })
 
   return {
-    version: 1,
+    version: 2,
     repo: f.repo,
     districts,
     roads: [...parent].map(([b, a]) => [a, b]),

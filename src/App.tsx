@@ -9,6 +9,7 @@ type Sample = { slug: string; label: string; language: string }
 const BASE = import.meta.env.BASE_URL
 const STEPS = ['Listing files', 'Reading code and history', 'Generating world']
 const DAY = 86_400_000
+const HEARTS = 5
 
 const store = {
   get<T>(k: string): T | null { try { return JSON.parse(localStorage.getItem(k) ?? 'null') } catch { return null } },
@@ -28,6 +29,13 @@ export default function App() {
   const [near, setNear] = useState<Building | null>(null)
   const [zone, setZone] = useState<District | null>(null)
   const [cleared, setCleared] = useState<Set<string>>(new Set())
+  const [hearts, setHearts] = useState(HEARTS)
+  const [toast, setToast] = useState('')
+
+  const finalBoss = world?.districts.flatMap(d => d.buildings).find(b => b.cls === 'Final boss') ?? null
+  const finalDistrict = finalBoss && world?.districts.find(d => d.buildings.includes(finalBoss))
+  useEffect(() => { if (game.current) game.current.quest = finalBoss && !cleared.has(finalBoss.path) ? finalBoss : null }, [finalBoss, cleared])
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t) }, [toast])
 
   useEffect(() => {
     const g = new Game(canvas.current!, { inspect: setSelected, near: setNear, zone: setZone })
@@ -47,6 +55,7 @@ export default function App() {
     game.current!.setWorld(w)
     setCleared(c)
     setSelected(null)
+    setHearts(HEARTS)
     setWorld(w)
   }
 
@@ -64,7 +73,7 @@ export default function App() {
     const sample = list.find(s => s.label.toLowerCase() === key)
     if (sample) return loadSample(sample)
     const cached = store.get<{ at: number; world: World }>(`gq:world:${key}`)
-    if (cached && Date.now() - cached.at < DAY) { show(cached.world); history.replaceState(null, '', `?repo=${key}`); return }
+    if (cached && cached.world.version === 2 && Date.now() - cached.at < DAY) { show(cached.world); history.replaceState(null, '', `?repo=${key}`); return }
 
     setError('')
     setSelected(null)
@@ -86,10 +95,21 @@ export default function App() {
     const next = new Set(cleared).add(b.path)
     game.current!.cleared = next
     setCleared(next)
+    setHearts(h => Math.min(HEARTS, h + 1))
     store.set(`gq:cleared:${repoKey(world!)}`, [...next])
+    if (b.cls === 'Final boss') setToast(`${b.title} is defeated. You conquered ${world!.repo.owner}/${world!.repo.name}!`)
+  }
+
+  function hit(b: Building) {
+    if (hearts > 1) { setHearts(hearts - 1); return }
+    setSelected(null)
+    setHearts(HEARTS)
+    game.current!.respawn()
+    setToast(`Knocked out by ${b.title}. Back to README Village.`)
   }
 
   const fighters = world ? world.districts.flatMap(d => d.buildings).filter(b => b.cls !== 'NPC') : []
+  const bosses = fighters.filter(b => b.cls === 'Boss' || b.cls === 'Final boss')
   const selectedDistrict = selected && world?.districts.find(d => d.buildings.includes(selected))
   const current = world && `${world.repo.owner}/${world.repo.name}`.toLowerCase()
 
@@ -123,14 +143,19 @@ export default function App() {
         {world && (
           <div className="hud">
             <b>{world.repo.owner}/{world.repo.name}{world.repo.stars ? `  ★ ${world.repo.stars.toLocaleString()}` : ''}</b>
+            <span className="hearts" aria-label={`${hearts} of ${HEARTS} hearts`}>{'♥'.repeat(hearts)}<span>{'♥'.repeat(HEARTS - hearts)}</span></span>
             <span>{zone ? zone.label : 'On the road'}</span>
-            <span>Cleared {fighters.filter(b => cleared.has(b.path)).length} / {fighters.length}</span>
+            <span>Bosses {bosses.filter(b => cleared.has(b.path)).length} / {bosses.length} · Cleared {fighters.filter(b => cleared.has(b.path)).length} / {fighters.length}</span>
+            {finalBoss && (cleared.has(finalBoss.path)
+              ? <span className="quest done">Quest complete</span>
+              : <span className="quest">Quest: defeat {finalBoss.title}{finalDistrict ? ` in ${finalDistrict.label}` : ''}</span>)}
           </div>
         )}
-        {near && !selected && <div className="hint">E · inspect {near.name}</div>}
+        {toast && <div className="toast" role="status">{toast}</div>}
+        {near && !selected && <div className="hint">E · inspect {near.label}</div>}
         {selected && selectedDistrict && world && (
           <Panel key={selected.path} b={selected} district={selectedDistrict} world={world}
-            cleared={cleared.has(selected.path)} onClear={() => clear(selected)} onClose={() => setSelected(null)} />
+            cleared={cleared.has(selected.path)} onClear={() => clear(selected)} onHit={() => hit(selected)} onClose={() => setSelected(null)} />
         )}
         {loading && (
           <div className="loading" aria-live="polite">
