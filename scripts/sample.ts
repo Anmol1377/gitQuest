@@ -2,7 +2,7 @@
 // Usage: npm run sample -- facebook/react expressjs/express
 // Fetched facts are cached in scripts/.cache, so re-running after tweaking the generator costs no API calls.
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
-import { fetchFacts } from '../src/lib/build.ts'
+import { fetchFacts, readBuildings } from '../src/lib/build.ts'
 import { generate, type Facts } from '../src/lib/generate.ts'
 
 const dir = new URL('../public/samples/', import.meta.url)
@@ -14,8 +14,10 @@ const index: { slug: string; label: string; language: string }[] = existsSync(in
 for (const repo of process.argv.slice(2)) {
   const cached = new URL(`${repo.replace('/', '__').toLowerCase()}.json`, cache)
   let facts: Facts
-  if (existsSync(cached)) facts = JSON.parse(readFileSync(cached, 'utf8'))
-  else {
+  if (existsSync(cached)) {
+    facts = JSON.parse(readFileSync(cached, 'utf8'))
+    if (await readBuildings(facts)) writeFileSync(cached, JSON.stringify(facts)) // top up without touching the API
+  } else {
     facts = await fetchFacts(repo, (step, done, total) => process.stdout.write(`\r${repo}  step ${step + 1}/2  ${done}/${total}   `), process.env.GITHUB_TOKEN)
     writeFileSync(cached, JSON.stringify(facts))
   }

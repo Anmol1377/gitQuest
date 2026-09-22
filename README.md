@@ -29,7 +29,7 @@ The world isn't designed by hand. The repository generates it.
 | Lots of recent commits | **Hot zone** 🔥 |
 | Untouched for a year | **Abandoned zone**, greyed out with cobwebs |
 | Contributors | **Characters** who wander the districts they commit to |
-| File stats and imports | **Challenges**: "Which of these files does `login.js` import?" |
+| What a file imports and defines | **Challenges**: "Which of these is defined in `login.js`?" |
 
 Importance score: `imported-by × 3 + √lines / 4 + district activity`. Tests, examples and docs count for less, so they can't become the big bosses.
 
@@ -40,7 +40,8 @@ Big repos stay walkable: dominant folders like `src/` and monorepo folders like 
 - Walk with **WASD** or the arrow keys, or click where you want to go. Press **E** to inspect a building. Click the minimap to fast-travel
 - **Quest:** the red arrow points to the Final Boss, the most imported file in the repo
 - You walk on **roads and inside districts** only. Click anywhere and your character finds the way along the roads
-- **Fights** are questions built from the real code: "Which file imports `utils.js`?", "Which package does it use?". Each answer is one exchange: get it right and you hit the enemy, get it wrong and it hits you, and you see the correct answer. Then the next question comes
+- **Study, then fight.** Press **Read the code** on any enemy to see its real source. Every question is answered by that file: which files it imports, which packages it uses, what it defines, how long it is. Once you press Fight, the code closes
+- **Fights:** each answer is one exchange: get it right and you hit the enemy, get it wrong and it hits you, and you see the correct answer. Then the next question comes
 - Enemies take 1 hit to beat, mini bosses 2, bosses 3, and the Final Boss 4. They hit back for 10, 15, 25 and 34 damage
 - You have **100 HP**. Clearing a building heals 25. At 0 HP you're knocked out and sent back to README Village
 - A building's stats stay hidden until you defeat it. Progress is saved per repo in your browser

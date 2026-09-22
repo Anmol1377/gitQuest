@@ -130,6 +130,27 @@ export function resolveImport(from: string, spec: string, files: Set<string>, go
   return []
 }
 
+// Top-level names a file defines (functions, classes, exported consts). Used for "which is defined here?" questions.
+export function parseExports(path: string, text: string): string[] {
+  const e = ext(path)
+  const out: string[] = []
+  const grab = (re: RegExp) => { for (const m of text.matchAll(re)) out.push(m[1]) }
+  if (e === 'py') {
+    grab(/^(?:async\s+)?def\s+([A-Za-z]\w*)/gm)
+    grab(/^class\s+([A-Za-z]\w*)/gm)
+  } else if (e === 'go') {
+    grab(/^func\s+(?:\([^)]*\)\s*)?([A-Z]\w*)/gm)
+    grab(/^type\s+([A-Z]\w*)/gm)
+  } else {
+    grab(/^export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)/gm)
+    grab(/^(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)/gm)
+    grab(/^(?:[\w$]+\.)+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function/gm) // res.send = function send()
+    for (const m of text.matchAll(/^export\s*\{([^}]+)\}/gm))
+      for (const part of m[1].split(',')) { const n = part.trim().split(/\s+as\s+/).pop()!.trim(); if (/^[A-Za-z_$][\w$]*$/.test(n) && n !== 'default') out.push(n) }
+  }
+  return [...new Set(out)]
+}
+
 // External packages a file uses (for boss abilities).
 export function externalPackages(from: string, specs: string[]) {
   const e = ext(from)

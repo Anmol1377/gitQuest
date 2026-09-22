@@ -81,6 +81,14 @@ canvas { display: block; width: 100%; height: min(72vh, 680px); min-height: 440p
 .quiz button.right { border-color: var(--clear); color: var(--clear) }
 .quiz button.wrong { border-color: var(--boss); color: var(--boss) }
 .src { font: 11px var(--mono); color: var(--muted) }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent) }
+.code { border: 1px solid var(--line); border-radius: 6px; background: #0f141c; max-height: 340px; overflow: auto; flex-shrink: 0 }
+.code.loading { padding: 12px; font: 12px var(--mono); color: var(--muted) }
+.code-head { position: sticky; top: 0; background: var(--panel2); font: 11px var(--mono); color: var(--muted); padding: 4px 10px; border-bottom: 1px solid var(--line) }
+.code pre { margin: 0; padding: 6px 0; font: 11.5px/1.55 var(--mono); color: #c9cfda; width: max-content; min-width: 100% }
+.code pre div { padding-right: 12px; white-space: pre }
+.code pre div.key { background: rgba(240,180,41,.09); color: var(--text) }
+.code pre span { display: inline-block; width: 3.4em; padding-right: .9em; text-align: right; color: #4d586b; user-select: none }
 .open { font: 13px var(--mono); color: var(--muted) }
 .open:hover { color: var(--accent) }
 

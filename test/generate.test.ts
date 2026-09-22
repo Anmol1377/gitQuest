@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { generate, type Facts } from '../src/lib/generate.ts'
-import { parseImports, resolveImport, pickDistricts } from '../src/lib/analyze.ts'
+import { parseImports, parseExports, resolveImport, pickDistricts } from '../src/lib/analyze.ts'
 
 const src: Record<string, string> = {
   'src/payments/stripe.js': "import Stripe from 'stripe'\nimport { db } from '../db/database.js'\n" + 'x\n'.repeat(900),
@@ -36,6 +36,13 @@ test('parses and resolves imports across languages', () => {
   const mono = new Set(['packages/shared/ReactSymbols.js', 'packages/ui/src/index.ts'])
   assert.deepEqual(resolveImport('packages/dom/x.js', 'shared/ReactSymbols', mono), ['packages/shared/ReactSymbols.js'])
   assert.deepEqual(resolveImport('apps/web/x.ts', '@acme/ui', mono), ['packages/ui/src/index.ts'])
+})
+
+test('finds what a file defines', () => {
+  assert.deepEqual(parseExports('a.ts', 'export function login() {}\nexport const MAX = 1\nfunction helper() {}\nexport { x as signIn, y }\n  function nested() {}'), ['login', 'MAX', 'helper', 'signIn', 'y'])
+  assert.deepEqual(parseExports('res.js', 'res.send = function send(body) {}\nmodule.exports = res'), ['send'])
+  assert.deepEqual(parseExports('m.py', 'def load():\n  def inner(): pass\nclass User:\n'), ['load', 'User'])
+  assert.deepEqual(parseExports('m.go', 'func (s *Srv) Start() {}\nfunc helper() {}\ntype Config struct{}'), ['Start', 'Config'])
 })
 
 test('a dominant src/ folder is split into its children', () => {

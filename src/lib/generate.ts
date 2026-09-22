@@ -1,5 +1,5 @@
 // Repo facts -> world.json. Deterministic: the same repo always builds the same world.
-import { SIDELINE, pickDistricts, parseImports, resolveImport, externalPackages, SOURCE_EXT, ext, dirOf, baseName } from './analyze.ts'
+import { SIDELINE, pickDistricts, parseImports, parseExports, resolveImport, externalPackages, SOURCE_EXT, ext, dirOf, baseName } from './analyze.ts'
 
 export type Activity = { commits: number; lastDays: number | null; authors: Record<string, number> }
 export type RepoInfo = { owner: string; name: string; description: string; stars: number; branch: string; language: string }
@@ -97,7 +97,7 @@ export function generate(f: Facts): World {
   const imports = new Map<string, string[]>()
   const externals = new Map<string, string[]>()
   const dependents = new Map<string, number>()
-  const importers = new Map<string, string[]>()
+  const defines = new Map<string, string[]>()
   let links = 0
   for (const [p, text] of Object.entries(f.contents)) {
     if (!SOURCE_EXT.has(ext(p)) || !fileSet.has(p)) continue
@@ -105,10 +105,8 @@ export function generate(f: Facts): World {
     const targets = [...new Set(specs.flatMap(s => resolveImport(p, s, fileSet, goModule)))].filter(t => t !== p)
     imports.set(p, targets)
     externals.set(p, externalPackages(p, specs))
-    for (const t of targets) {
-      dependents.set(t, (dependents.get(t) ?? 0) + 1)
-      importers.get(t)?.push(p) ?? importers.set(t, [p])
-    }
+    defines.set(p, parseExports(p, text))
+    for (const t of targets) dependents.set(t, (dependents.get(t) ?? 0) + 1)
     links += targets.length
   }
 
@@ -148,6 +146,7 @@ export function generate(f: Facts): World {
     return [...new Set([...ext_, ...int_])].slice(0, 3)
   }
   const allPackages = [...new Set([...externals.values()].flat())]
+  const allNames = [...new Set([...defines.values()].flat())]
   const choice = (q: string, right: string, pool: string[], h: number, source: string): Quiz | null => {
     const decoys = [...new Set(pool)].filter(x => x !== right)
     if (decoys.length < 2) return null
@@ -164,28 +163,27 @@ export function generate(f: Facts): World {
     opts.sort((a, b) => a - b)
     return { q, options: opts.map(String), answer: opts.indexOf(n), source }
   }
-  // Several different questions per fighter, all answerable from the code, none from the panel.
+  // Several different questions per fighter. Every one is answerable by reading the file itself,
+  // which the player can do before the fight starts.
   const quizzesOf = (p: string, count: number): Quiz[] => {
     const h = hash(p)
     const name = /^(index|main|mod|__init__|init|app)\./i.test(baseName(p)) ? shortName(p) : baseName(p)
     const own = imports.get(p) ?? []
-    const users = importers.get(p) ?? []
     const pkgs = externals.get(p) ?? []
-    const deps = dependents.get(p) ?? 0
+    const names = defines.get(p) ?? []
     const src = ranked.filter(x => x !== p && SOURCE_EXT.has(ext(x)))
-    const graph = 'Built from the import graph'
+    const read = 'The answer is in the code'
     const makers: (() => Quiz | null)[] = [
-      () => own.length ? choice(`Which of these files does ${name} import?`, shortName(own[h % own.length]), src.filter(x => !own.includes(x)).map(shortName), h, graph) : null,
-      () => users.length ? choice(`Which of these files imports ${name}?`, shortName(users[h % users.length]), src.filter(x => !users.includes(x)).map(shortName), h >>> 3, graph) : null,
-      () => pkgs.length ? choice(`Which package does ${name} use?`, pkgs[h % pkgs.length], allPackages.filter(x => !pkgs.includes(x)), h >>> 5, 'Built from its imports') : null,
-      () => deps ? numeric(`How many files in this repo import ${name}?`, deps, h, graph) : null,
-      () => own.length ? numeric(`How many files from this repo does ${name} import?`, own.length, h >>> 2, graph) : null,
+      () => own.length ? choice(`Which of these files does ${name} import?`, shortName(own[h % own.length]), src.filter(x => !own.includes(x)).map(shortName), h, read) : null,
+      () => names.length ? choice(`Which of these is defined in ${name}?`, names[h % names.length], allNames.filter(x => !names.includes(x)), h >>> 3, read) : null,
+      () => pkgs.length ? choice(`Which package does ${name} use?`, pkgs[h % pkgs.length], allPackages.filter(x => !pkgs.includes(x)), h >>> 5, read) : null,
+      () => own.length ? numeric(`How many files from this repo does ${name} import?`, own.length, h >>> 2, read) : null,
       () => estimated(p) ? null : lengthQuiz(),
     ]
     function lengthQuiz(): Quiz {
       const l = lines(p)
       return { q: `Roughly how long is ${name}?`, options: ['Under 100 lines', '100 to 400 lines', 'Over 400 lines'],
-        answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : 'Counted from the file' }
+        answer: l < 100 ? 0 : l <= 400 ? 1 : 2, source: estimated(p) ? 'Estimated from file size' : read }
     }
     const start = h % makers.length
     const out: Quiz[] = []

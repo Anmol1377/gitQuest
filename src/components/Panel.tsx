@@ -16,6 +16,7 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
   const [hits, setHits] = useState(0)          // correct answers landed
   const [picked, setPicked] = useState<number | null>(null)
   const [log, setLog] = useState('')
+  const [code, setCode] = useState<string | null>(null) // null: closed, '' : loading
   const npc = b.cls === 'NPC'
   const quizzes = b.quizzes ?? []
   const need = quizzes.length                  // correct answers needed to win
@@ -25,6 +26,18 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
   const damage = DAMAGE[b.cls] ?? 10
   const reveal = cleared || npc
   const fileUrl = b.more ? null : `https://github.com/${world.repo.owner}/${world.repo.name}/blob/${world.repo.branch}/${b.path}`
+
+  // Study the real file before the fight. Same no-API sources the world was built from.
+  const readCode = async () => {
+    setCode('')
+    const { owner, name, branch } = world.repo
+    const file = b.path.split('/').map(encodeURIComponent).join('/')
+    for (const url of [`https://cdn.jsdelivr.net/gh/${owner}/${name}@${branch}/${file}`, `https://raw.githubusercontent.com/${owner}/${name}/${branch}/${file}`]) {
+      const text = await fetch(url).then(r => (r.ok ? r.text() : null)).catch(() => null)
+      if (text != null) { setCode(text); return }
+    }
+    setCode('// Couldn\u2019t load this file. Try "Open on GitHub" below.')
+  }
 
   // Every answer is one exchange: right, you hit it; wrong, it hits you. Then the next question.
   const answer = (i: number) => {
@@ -75,8 +88,13 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
 
       {!fighting ? (
         <>
-          {!reveal && <span className="src">Defeat it to reveal its stats.</span>}
-          <button className="btn" disabled={cleared} onClick={() => setFighting(true)}>
+          {!npc && !cleared && (
+            <span className="src">Every question is answered by this file. Read it first: once the fight starts, the code closes.</span>
+          )}
+          {!b.more && !cleared && (code == null
+            ? <button className="btn ghost" onClick={readCode}>{npc ? 'READ THE FILE' : 'READ THE CODE'}</button>
+            : <CodeView text={code} />)}
+          <button className="btn" disabled={cleared} onClick={() => { setFighting(true); setCode(null) }}>
             {npc ? 'TALK' : cleared ? 'CLEARED' : b.cls.endsWith('oss') ? 'ENTER DUNGEON' : 'FIGHT'}
           </button>
         </>
@@ -100,5 +118,21 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
       ) : null}
       {fileUrl && <a className="open" href={fileUrl} target="_blank" rel="noreferrer">Open on GitHub ↗</a>}
     </aside>
+  )
+}
+
+const KEY_LINE = /^\s*(import\b|export\b|from\s+\S+\s+import\b|package\b|func\s|def\s|class\s|function\s|const\s+\w+\s*=\s*require\()|require\(/
+
+function CodeView({ text }: { text: string }) {
+  if (!text) return <div className="code loading">Reading the scroll…</div>
+  const lines = text.replace(/\n$/, '').split('\n')
+  const shown = lines.slice(0, 2000)
+  return (
+    <div className="code" tabIndex={0} aria-label="File source">
+      <div className="code-head">{lines.length.toLocaleString()} lines{lines.length > shown.length ? ' · first 2,000 shown' : ''}</div>
+      <pre>{shown.map((l, i) => (
+        <div key={i} className={KEY_LINE.test(l) ? 'key' : undefined}><span>{i + 1}</span>{l || ' '}</div>
+      ))}</pre>
+    </div>
   )
 }

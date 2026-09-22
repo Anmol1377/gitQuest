@@ -62,7 +62,7 @@ export async function fetchFacts(input: string, progress: Progress = () => {}, t
     for (const q of queues) if (i < q.length && toRead.length < MAX_READ) toRead.push(q[i])
 
   const busy = groups.filter(g => g.id !== 'root' && g.id !== '*').slice(0, MAX_ACTIVITY)
-  const total = toRead.length + busy.length + 2
+  let total = toRead.length + busy.length + 2
   let done = 0
   const tick = () => progress(1, ++done, total)
 
@@ -75,6 +75,23 @@ export async function fetchFacts(input: string, progress: Progress = () => {}, t
     ...busy.map(g => optional(gh.activity(repo.owner, repo.name, g.path.replace(/\/$/, '')).then(a => { activity[g.id] = a }))),
   ])
   if (info) repo = { ...info, language: info.language || repo.language, branch: repo.branch }
+  const facts: Facts = { repo, files, contents, activity, contributors: contributors ?? [], truncated, apiCalls: gh.calls }
 
-  return { repo, files, contents, activity, contributors: contributors ?? [], truncated, apiCalls: gh.calls }
+  await readBuildings(facts, n => { total += n }, tick)
+  return facts
+}
+
+// Second pass: every file that became a building gets read, so its questions come from real code.
+export async function readBuildings(facts: Facts, onCount: (n: number) => void = () => {}, onEach?: () => void) {
+  // Reading changes the rankings a little, so repeat until every shown building has been read.
+  let read = 0
+  for (let pass = 0; pass < 3; pass++) {
+    const missing = generate(facts).districts.flatMap(d => d.buildings)
+      .filter(b => !b.more && facts.contents[b.path] == null && facts.files.some(f => f.path === b.path)).map(b => b.path)
+    if (!missing.length) break
+    onCount(missing.length)
+    Object.assign(facts.contents, await rawFiles(facts.repo.owner, facts.repo.name, facts.repo.branch, missing, onEach))
+    read += missing.length
+  }
+  return read
 }
