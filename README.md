@@ -7,11 +7,25 @@
 </p>
 
 <p align="center">
-  <a href="https://anmol1377.github.io/gitQuest/"><b>Play it →</b></a>
-  &nbsp;·&nbsp;
+  <a href="https://anmol1377.github.io/gitQuest/"><img src="https://img.shields.io/badge/%E2%96%B6%20PLAY%20NOW-anmol1377.github.io%2FgitQuest-f0b429?style=for-the-badge&labelColor=141a24" alt="Play gitQuest now" /></a>
+</p>
+
+<p align="center">
+  <b>Live:</b> <a href="https://anmol1377.github.io/gitQuest/">https://anmol1377.github.io/gitQuest/</a><br/>
+  No install, no login, no API key. Just open it in your browser.
+</p>
+
+<p align="center">
+  Demo worlds:
   <a href="https://anmol1377.github.io/gitQuest/?repo=facebook/react">facebook/react</a>
   &nbsp;·&nbsp;
   <a href="https://anmol1377.github.io/gitQuest/?repo=expressjs/express">expressjs/express</a>
+  &nbsp;·&nbsp;
+  <a href="https://anmol1377.github.io/gitQuest/?repo=Anmol1377/code-tune">Anmol1377/code-tune</a>
+</p>
+
+<p align="center">
+  Play your own repo: <code>https://anmol1377.github.io/gitQuest/?repo=owner/name</code>
 </p>
 
 ---
