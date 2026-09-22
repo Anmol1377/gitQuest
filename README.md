@@ -44,6 +44,7 @@ Big repos stay walkable: dominant folders like `src/` and monorepo folders like 
 - **Fights:** each answer is one exchange: get it right and you hit the enemy, get it wrong and it hits you, and you see the correct answer. Then the next question comes
 - Enemies take 1 hit to beat, mini bosses 2, bosses 3, and the Final Boss 4. They hit back for 10, 15, 25 and 34 damage
 - You have **100 HP**. Clearing a building heals 25. At 0 HP you're knocked out and sent back to README Village
+- **Talk to contributors** (press **E** or click them). Each one gives one real answer for the strongest enemy in their district, patches you up for +30 HP once, can send you to where they work, and links to their GitHub profile
 - A building's stats stay hidden until you defeat it. Progress is saved per repo in your browser
 
 ## No API key needed

@@ -78,6 +78,16 @@ canvas { display: block; width: 100%; height: min(72vh, 680px); min-height: 440p
 .chip.ghost { color: var(--ghost) }
 .chip.clear { color: var(--clear); border-color: var(--clear) }
 .talk { font-style: italic; margin: 0 }
+.talk.reply { color: var(--accent) }
+.who { display: flex; align-items: center; gap: 12px; padding-right: 24px }
+.who img { border-radius: 6px; background: var(--panel2); image-rendering: pixelated; flex-shrink: 0 }
+.who .title { word-break: break-all }
+.options { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed var(--line); padding-top: 14px }
+.options button { text-align: left; font: 14px var(--body); background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 9px 12px; cursor: pointer }
+.options button:hover:not(:disabled) { border-color: var(--accent) }
+.options button:disabled { color: var(--muted); cursor: default }
+.options a { font: 13px var(--mono); color: var(--muted); padding: 4px 2px }
+.options a:hover { color: var(--accent) }
 .quiz { display: flex; flex-direction: column; gap: 8px; border-top: 1px dashed var(--line); padding-top: 14px }
 .quiz p { font-weight: 500; margin: 0 }
 .quiz button { text-align: left; font: 14px var(--mono); background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 9px 12px; cursor: pointer; word-break: break-all }

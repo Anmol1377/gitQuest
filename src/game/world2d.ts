@@ -1,5 +1,5 @@
 // Draws a world.json on a 2D canvas and lets the player walk it.
-import type { World, Building, District } from '../lib/generate.ts'
+import type { World, Building, District, Character } from '../lib/generate.ts'
 import { hash } from '../lib/generate.ts'
 import { findPath, gridOf, roadsOf, walkableAt, ROAD_W, type Grid } from './walk.ts'
 
@@ -25,8 +25,10 @@ export type Hooks = {
   near: (b: Building | null) => void
   zone: (d: District | null) => void
   fullscreen: () => void
+  nearChar: (c: Character | null) => void
+  talk: (c: Character) => void
 }
-type Npc = { login: string; role: string; commits: number; homes: District[]; color: string; x: number; y: number; tx: number; ty: number }
+type Npc = { char: Character; login: string; role: string; commits: number; homes: District[]; color: string; x: number; y: number; tx: number; ty: number }
 
 const SPEED = 240
 const MAP_MAX = 170
@@ -47,6 +49,9 @@ export class Game {
   grid: Grid = { cells: new Uint8Array(0), w: 0, h: 0 }
   pendingOpen: Building | null = null
   nearB: Building | null = null
+  nearN: Npc | null = null
+  pendingTalk: Npc | null = null
+  talking: string | null = null // login of the character you're talking to; they stand still
   quest: Building | null = null
   zoneD: District | null | undefined = undefined
   active = false
@@ -77,7 +82,8 @@ export class Game {
       const k = e.key.toLowerCase()
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault()
       this.keys[k] = true
-      if (k === 'e' && this.nearB) this.hooks.inspect(this.nearB)
+      if (k === 'e' && this.nearN) this.hooks.talk(this.nearN.char)
+      else if (k === 'e' && this.nearB) this.hooks.inspect(this.nearB)
       if (k === 'escape') this.hooks.inspect(null)
       if (k === 'f' && !e.metaKey && !e.ctrlKey) this.hooks.fullscreen()
     })
@@ -121,7 +127,7 @@ export class Game {
       const homes = c.homes.map(id => byId.get(id)!).filter(Boolean)
       const d = homes[0] ?? w.districts[0]
       const h = hash(c.login)
-      return { ...c, homes: homes.length ? homes : [d], color: `hsl(${h % 360} 70% 72%)`,
+      return { ...c, char: c, homes: homes.length ? homes : [d], color: `hsl(${h % 360} 70% 72%)`,
         x: d.x - d.w / 2 + 30 + (h % Math.max(1, d.w - 60)), y: d.y + d.h / 2 - 16, tx: d.x, ty: d.y + d.h / 2 - 16 }
     })
     this.resize()
@@ -158,9 +164,20 @@ export class Game {
       return
     }
     const wx = sx - this.W / 2 + this.cam.x, wy = sy - this.H / 2 + this.cam.y
+    const who = this.npcs.find(n => Math.abs(wx - n.x) < 12 && wy > n.y - 24 && wy < n.y + 6)
+    this.pendingTalk = who ?? null
+    if (who) { this.pendingOpen = null; this.walkTo(who.x, who.y + 14); return }
     const hit = this.buildings.find(b => wx >= b.x && wx <= b.x + b.size && wy >= b.y - b.size * 0.5 && wy <= b.y + b.size)
     this.pendingOpen = hit ?? null
     this.walkTo(hit ? hit.x + hit.size / 2 : wx, hit ? hit.y + hit.size + 18 : wy)
+  }
+
+  travelTo(id: string) {
+    const d = this.world.districts.find(x => x.id === id)
+    if (!d) return
+    this.player.x = d.x; this.player.y = d.y + d.h / 2 - 14
+    this.target = this.pendingOpen = this.pendingTalk = null
+    this.route = []
   }
 
   walkTo(x: number, y: number) {
@@ -176,13 +193,14 @@ export class Game {
     this.target = null
     this.route = []
     if (this.pendingOpen) { this.hooks.inspect(this.pendingOpen); this.pendingOpen = null }
+    if (this.pendingTalk) { this.hooks.talk(this.pendingTalk.char); this.pendingTalk = null }
   }
 
   update(dt: number) {
     const k = this.keys, p = this.player
     let dx = (k.d || k.arrowright ? 1 : 0) - (k.a || k.arrowleft ? 1 : 0)
     let dy = (k.s || k.arrowdown ? 1 : 0) - (k.w || k.arrowup ? 1 : 0)
-    if (dx || dy) { this.target = null; this.pendingOpen = null; this.route = [] }
+    if (dx || dy) { this.target = null; this.pendingOpen = this.pendingTalk = null; this.route = [] }
     else if (this.route.length) {
       const w = this.route[0], tx = w.x - p.x, ty = w.y - p.y, dist = Math.hypot(tx, ty)
       if (dist < 6) { this.route.shift(); if (!this.route.length) this.arrive() }
@@ -208,11 +226,17 @@ export class Game {
       const d = Math.hypot(p.x - cx, p.y - cy)
       if (d < best) { best = d; near = b }
     }
+    // characters and buildings compete for E: whichever is closer wins
+    let nearN: Npc | null = null, bestN = 44
+    for (const n of this.npcs) { const d = Math.hypot(p.x - n.x, p.y - n.y); if (d < bestN) { bestN = d; nearN = n } }
+    if (nearN && near) { if (bestN < best) near = null; else nearN = null }
     if (near !== this.nearB) { this.nearB = near; this.hooks.near(near) }
+    if (nearN !== this.nearN) { this.nearN = nearN; this.hooks.nearChar(nearN?.char ?? null) }
     const zone = this.world.districts.find(d => Math.abs(p.x - d.x) < d.w / 2 && Math.abs(p.y - d.y) < d.h / 2) ?? null
     if (zone !== this.zoneD) { this.zoneD = zone; this.hooks.zone(zone) }
 
     for (const n of this.npcs) {
+      if (n.login === this.talking) continue
       const d = Math.hypot(n.tx - n.x, n.ty - n.y)
       if (d < 4) {
         const home = n.homes[Math.floor(Math.random() * n.homes.length)]
@@ -388,6 +412,10 @@ export class Game {
     ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.beginPath(); ctx.ellipse(n.x, n.y + 2, 7, 3, 0, 0, 7); ctx.fill()
     ctx.fillStyle = n.color; ctx.fillRect(n.x - 5, n.y - 12, 10, 11); ctx.fillRect(n.x - 4, n.y - 20, 8, 7)
     ctx.textAlign = 'center'
+    if (n === this.nearN) {
+      ctx.strokeStyle = '#f0b429'; ctx.lineWidth = 2
+      ctx.beginPath(); ctx.ellipse(n.x, n.y + 2, 11, 5, 0, 0, 7); ctx.stroke()
+    }
     if (d > 110 || n !== this.closestNpc()) return
     ctx.font = '700 12px "Pixelify Sans", monospace'; ctx.fillStyle = n.color; ctx.fillText(n.login, n.x, n.y - 26)
     if (d < 70) {

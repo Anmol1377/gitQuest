@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { Game } from './game/world2d.ts'
 import { buildWorld } from './lib/build.ts'
 import { parseRepo } from './lib/github.ts'
-import type { Building, District, World } from './lib/generate.ts'
+import type { Building, Character, District, World } from './lib/generate.ts'
 import Panel from './components/Panel.tsx'
+import Talk, { type TalkMemo } from './components/Talk.tsx'
 
 type Sample = { slug: string; label: string; language: string }
 const BASE = import.meta.env.BASE_URL
@@ -30,6 +31,9 @@ export default function App() {
   const [error, setError] = useState('')
   const [selected, setSelected] = useState<Building | null>(null)
   const [near, setNear] = useState<Building | null>(null)
+  const [nearChar, setNearChar] = useState<Character | null>(null)
+  const [talk, setTalk] = useState<Character | null>(null)
+  const [memos, setMemos] = useState<Record<string, TalkMemo>>({})
   const [zone, setZone] = useState<District | null>(null)
   const [cleared, setCleared] = useState<Set<string>>(new Set())
   const [hp, setHp] = useState(MAX_HP)
@@ -41,7 +45,11 @@ export default function App() {
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t) }, [toast])
 
   useEffect(() => {
-    const g = new Game(canvas.current!, { inspect: setSelected, near: setNear, zone: setZone, fullscreen: toggleFull })
+    const g = new Game(canvas.current!, {
+      inspect: b => { setSelected(b); endTalk() },
+      talk: c => { setSelected(null); setTalk(c); g.talking = c.login },
+      near: setNear, nearChar: setNearChar, zone: setZone, fullscreen: toggleFull,
+    })
     const onFull = () => setFull(document.fullscreenElement === stage.current)
     document.addEventListener('fullscreenchange', onFull)
     game.current = g
@@ -53,6 +61,11 @@ export default function App() {
     }).catch(() => setError('Couldn’t load the demo worlds. Paste a repo above instead.'))
     return () => { g.destroy(); document.removeEventListener('fullscreenchange', onFull) }
   }, [])
+
+  function endTalk() {
+    setTalk(null)
+    if (game.current) game.current.talking = null
+  }
 
   function toggleFull() {
     if (document.fullscreenElement) document.exitFullscreen()
@@ -66,6 +79,8 @@ export default function App() {
     game.current!.setWorld(w)
     setCleared(c)
     setSelected(null)
+    endTalk()
+    setMemos({})
     setHp(MAX_HP)
     setWorld(w)
   }
@@ -169,7 +184,13 @@ export default function App() {
         {document.fullscreenEnabled && (
           <button className="fs" onClick={toggleFull} aria-label={full ? 'Exit full screen' : 'Full screen'}>{full ? '⤡ Exit' : '⤢ Full screen'} <kbd>F</kbd></button>
         )}
-        {near && !selected && <div className="hint">E · inspect {near.label}</div>}
+        {!selected && !talk && (near || nearChar) && <div className="hint">{near ? `E · inspect ${near.label}` : `E · talk to ${nearChar!.login}`}</div>}
+        {talk && world && (
+          <Talk key={talk.login} c={talk} world={world} cleared={cleared} hp={hp} maxHp={MAX_HP}
+            memo={memos[talk.login] ?? {}} onMemo={m => setMemos(ms => ({ ...ms, [talk.login]: m }))}
+            onHeal={n => setHp(h => Math.min(MAX_HP, h + n))}
+            onTravel={() => { game.current!.travelTo(talk.homes[0]); endTalk() }} onClose={endTalk} />
+        )}
         {selected && selectedDistrict && world && (
           <Panel key={selected.path} b={selected} district={selectedDistrict} world={world}
             cleared={cleared.has(selected.path)} onClear={() => clear(selected)} playerHp={hp} maxHp={MAX_HP} onHit={d => hit(selected, d)} onClose={() => setSelected(null)} />
@@ -190,7 +211,7 @@ export default function App() {
       </div>
 
       <div className="under">
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to inspect · <kbd>F</kbd> full screen · click the minimap to travel</span>
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows to walk · click to walk there · <kbd>E</kbd> to inspect or talk · <kbd>F</kbd> full screen · click the minimap to travel</span>
         <span className="legend">
           <span><i className="sw" style={{ background: '#c9c2ae' }} />NPC</span>
           <span><i className="sw" style={{ background: '#8a93a6' }} />Enemy</span>
