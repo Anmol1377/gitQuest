@@ -72,7 +72,7 @@ export class Game {
     this.cleanup.push(() => ro.disconnect())
     on('keydown', e => {
       const el = e.target as HTMLElement
-      if (!this.active || el.tagName === 'INPUT' || el.tagName === 'BUTTON') return
+      if (!this.active || el.tagName === 'INPUT' || el.tagName === 'BUTTON' || el.closest?.('[data-nokeys]')) return
       const k = e.key.toLowerCase()
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault()
       this.keys[k] = true

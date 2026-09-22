@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Building, District, World } from '../lib/generate.ts'
 import { CLS_COLOR } from '../game/world2d.ts'
 
@@ -91,12 +91,14 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
           {!npc && !cleared && (
             <span className="src">Every question is answered by this file. Read it first: once the fight starts, the code closes.</span>
           )}
-          {!b.more && !cleared && (code == null
-            ? <button className="btn ghost" onClick={readCode}>{npc ? 'READ THE FILE' : 'READ THE CODE'}</button>
-            : <CodeView text={code} />)}
-          <button className="btn" disabled={cleared} onClick={() => { setFighting(true); setCode(null) }}>
+          {!b.more && !cleared && <button className="btn ghost" onClick={readCode}>{npc ? 'READ THE FILE' : 'READ THE CODE'}</button>}
+          <button className="btn" disabled={cleared} onClick={() => setFighting(true)}>
             {npc ? 'TALK' : cleared ? 'CLEARED' : b.cls.endsWith('oss') ? 'ENTER DUNGEON' : 'FIGHT'}
           </button>
+          {code != null && (
+            <CodeView text={code} path={b.path} fight={npc ? null : b.cls.endsWith('oss') ? 'ENTER DUNGEON' : 'FIGHT'}
+              onClose={() => setCode(null)} onFight={() => { setCode(null); setFighting(true) }} />
+          )}
         </>
       ) : npc ? (
         <p className="talk">“{b.talk}”</p>
@@ -123,16 +125,29 @@ export default function Panel({ b, district, world, cleared, playerHp, maxHp, on
 
 const KEY_LINE = /^\s*(import\b|export\b|from\s+\S+\s+import\b|package\b|func\s|def\s|class\s|function\s|const\s+\w+\s*=\s*require\()|require\(/
 
-function CodeView({ text }: { text: string }) {
-  if (!text) return <div className="code loading">Reading the scroll…</div>
+// Full-screen reader. Native <dialog>: Esc closes it and focus stays inside.
+function CodeView({ text, path, fight, onClose, onFight }: { text: string; path: string; fight: string | null; onClose: () => void; onFight: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => { ref.current?.showModal() }, [])
   const lines = text.replace(/\n$/, '').split('\n')
-  const shown = lines.slice(0, 2000)
+  const shown = lines.slice(0, 3000)
   return (
-    <div className="code" tabIndex={0} aria-label="File source">
-      <div className="code-head">{lines.length.toLocaleString()} lines{lines.length > shown.length ? ' · first 2,000 shown' : ''}</div>
-      <pre>{shown.map((l, i) => (
-        <div key={i} className={KEY_LINE.test(l) ? 'key' : undefined}><span>{i + 1}</span>{l || ' '}</div>
-      ))}</pre>
-    </div>
+    <dialog ref={ref} className="reader" data-nokeys onClose={onClose} onCancel={onClose}>
+      <header>
+        <div>
+          <b>{path}</b>
+          <span>{text ? `${lines.length.toLocaleString()} lines${lines.length > shown.length ? ' · first 3,000 shown' : ''}` : 'Loading…'}{fight ? ' · every question is answered by this file' : ''}</span>
+        </div>
+        <div className="actions">
+          <button className="btn ghost" onClick={onClose}>BACK</button>
+          {fight && <button className="btn" onClick={onFight}>{fight}</button>}
+        </div>
+      </header>
+      {text ? (
+        <pre>{shown.map((l, i) => (
+          <div key={i} className={KEY_LINE.test(l) ? 'key' : undefined}><span>{i + 1}</span><code>{l || ' '}</code></div>
+        ))}</pre>
+      ) : <p className="src" style={{ padding: 16 }}>Reading the scroll…</p>}
+    </dialog>
   )
 }

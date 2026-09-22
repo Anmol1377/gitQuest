@@ -82,13 +82,20 @@ canvas { display: block; width: 100%; height: min(72vh, 680px); min-height: 440p
 .quiz button.wrong { border-color: var(--boss); color: var(--boss) }
 .src { font: 11px var(--mono); color: var(--muted) }
 .btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent) }
-.code { border: 1px solid var(--line); border-radius: 6px; background: #0f141c; max-height: 340px; overflow: auto; flex-shrink: 0 }
-.code.loading { padding: 12px; font: 12px var(--mono); color: var(--muted) }
-.code-head { position: sticky; top: 0; background: var(--panel2); font: 11px var(--mono); color: var(--muted); padding: 4px 10px; border-bottom: 1px solid var(--line) }
-.code pre { margin: 0; padding: 6px 0; font: 11.5px/1.55 var(--mono); color: #c9cfda; width: max-content; min-width: 100% }
-.code pre div { padding-right: 12px; white-space: pre }
-.code pre div.key { background: rgba(240,180,41,.09); color: var(--text) }
-.code pre span { display: inline-block; width: 3.4em; padding-right: .9em; text-align: right; color: #4d586b; user-select: none }
+.reader { width: min(1100px, calc(100vw - 32px)); max-width: none; height: calc(100vh - 48px); max-height: none; padding: 0; border: 1px solid var(--line); border-radius: 10px; background: #0f141c; color: var(--text); display: flex; flex-direction: column; overflow: hidden }
+.reader:not([open]) { display: none }
+.reader::backdrop { background: rgba(8,11,16,.8) }
+.reader header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line) }
+.reader header > div:first-child { display: flex; flex-direction: column; min-width: 0 }
+.reader header b { font: 500 14px var(--mono); word-break: break-all }
+.reader header span { font: 12px var(--mono); color: var(--muted) }
+.reader .actions { display: flex; gap: 8px }
+.reader .actions .btn { padding: 8px 16px }
+.reader pre { margin: 0; padding: 8px 0; overflow: auto; flex: 1; font: 13px/1.6 var(--mono); color: #c9cfda }
+.reader pre div { display: grid; grid-template-columns: 4em 1fr; padding-right: 16px }
+.reader pre div.key { background: rgba(240,180,41,.09); color: var(--text) }
+.reader pre span { text-align: right; padding-right: 1em; color: #4d586b; user-select: none }
+.reader pre code { font: inherit; white-space: pre-wrap; word-break: break-word }
 .open { font: 13px var(--mono); color: var(--muted) }
 .open:hover { color: var(--accent) }
 
